@@ -10,6 +10,7 @@ from typing import Iterator
 import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
+from tqdm.contrib.concurrent import process_map
 
 # Matplotlib setup
 import matplotlib
@@ -56,46 +57,90 @@ class DescriptorCalculator:
     
     @staticmethod
     def calculate_one_smiles(smi: str):
+        """Returns (smiles, has_salts, MolDescriptors or None)"""
         from rdkit import Chem
         salts = "." in smi
         mol = Chem.MolFromSmiles(smi)
         if mol is None:
-            return False, salts, None
+            return smi, salts, None
         desc = DescriptorCalculator.calculate(mol)
-        return True, salts, desc
+        return smi, salts, desc
     
     @staticmethod
-    def calculate_parallel(smiles: list[str], workers: int, desc: str = "Processing") -> dict:
-        """Calculate descriptors with progress bar"""
-        print(f"[INFO] {desc}: Processing {len(smiles)} SMILES with {workers} workers...")
-        results = {"NumberLigands":0,"NumberInvalidSMILES":0,"NumberWithSalts":0,
-                   "NumberWithMetals":0,"NumberPAINSMatches":0,
-                   "NumberLipinskiCompliant":0,"NumberVeberCompliant":0,
-                   "_Sum_MW":0.0,"_Sum_cLogP":0.0,"_Sum_TPSA":0.0,
-                   "_Sum_Fsp3":0.0,"_Sum_RotB":0.0,"_Count_Desc":0}
+    def calculate_all_parallel(smiles_list: list[str], workers: int) -> dict[str, tuple[bool, MolDescriptors]]:
+        """Calculate descriptors for all SMILES and return cache dict: {smiles: (has_salts, desc)}"""
+        print(f"[INFO] Calculating descriptors for {len(smiles_list)} unique SMILES with {workers} workers...")
         
-        with ProcessPoolExecutor(max_workers=workers) as exe:
-            futs=[exe.submit(DescriptorCalculator.calculate_one_smiles,s) for s in smiles]
-            for fut in tqdm(as_completed(futs), total=len(futs), desc=desc):
-                ok,salts,desc_result=fut.result()
-                if not ok: 
-                    results["NumberInvalidSMILES"]+=1
-                    continue
-                results["NumberLigands"]+=1
-                if salts: results["NumberWithSalts"]+=1
-                if desc_result.has_metal: results["NumberWithMetals"]+=1
-                if desc_result.pains_hit: results["NumberPAINSMatches"]+=1
-                if desc_result.lip_pass: results["NumberLipinskiCompliant"]+=1
-                if desc_result.veber_pass: results["NumberVeberCompliant"]+=1
-                results["_Sum_MW"]+=desc_result.mw
-                results["_Sum_cLogP"]+=desc_result.clogp
-                results["_Sum_TPSA"]+=desc_result.tpsa
-                results["_Sum_Fsp3"]+=desc_result.fsp3
-                results["_Sum_RotB"]+=desc_result.rb
-                results["_Count_Desc"]+=1
+        results = process_map(
+            DescriptorCalculator.calculate_one_smiles,
+            smiles_list,
+            max_workers=workers,
+            chunksize=100,
+            desc="Computing descriptors"
+        )
         
-        print(f"[INFO] Processed {results['NumberLigands']} valid molecules ({results['NumberInvalidSMILES']} invalid)")
-        return results
+        cache = {}
+        invalid_count = 0
+        for smi, salts, desc in results:
+            if desc is None:
+                invalid_count += 1
+                cache[smi] = (salts, None)
+            else:
+                cache[smi] = (salts, desc)
+        
+        valid_count = len(smiles_list) - invalid_count
+        print(f"[INFO] Computed {valid_count} valid molecules ({invalid_count} invalid)")
+        return cache
+
+# --- Aggregation from cache ---
+def aggregate_from_cache(smiles_list: list[str], cache: dict) -> dict:
+    """Aggregate statistics from cached descriptors"""
+    results = {
+        "NumberLigands": 0,
+        "NumberInvalidSMILES": 0,
+        "NumberWithSalts": 0,
+        "NumberWithMetals": 0,
+        "NumberPAINSMatches": 0,
+        "NumberLipinskiCompliant": 0,
+        "NumberVeberCompliant": 0,
+        "_Sum_MW": 0.0,
+        "_Sum_cLogP": 0.0,
+        "_Sum_TPSA": 0.0,
+        "_Sum_Fsp3": 0.0,
+        "_Sum_RotB": 0.0,
+        "_Count_Desc": 0
+    }
+    
+    for smi in smiles_list:
+        if smi not in cache:
+            continue
+        
+        salts, desc = cache[smi]
+        
+        if desc is None:
+            results["NumberInvalidSMILES"] += 1
+            continue
+        
+        results["NumberLigands"] += 1
+        if salts:
+            results["NumberWithSalts"] += 1
+        if desc.has_metal:
+            results["NumberWithMetals"] += 1
+        if desc.pains_hit:
+            results["NumberPAINSMatches"] += 1
+        if desc.lip_pass:
+            results["NumberLipinskiCompliant"] += 1
+        if desc.veber_pass:
+            results["NumberVeberCompliant"] += 1
+        
+        results["_Sum_MW"] += desc.mw
+        results["_Sum_cLogP"] += desc.clogp
+        results["_Sum_TPSA"] += desc.tpsa
+        results["_Sum_Fsp3"] += desc.fsp3
+        results["_Sum_RotB"] += desc.rb
+        results["_Count_Desc"] += 1
+    
+    return results
 
 # --- Dataset Classes ---
 def read_smi_file(filepath: Path, label: str):
@@ -166,32 +211,44 @@ class Dekois2Dataset(BaseDataset):
                     elif lig_id.startswith("ZINC"):
                         yield smi, "decoy"
 
-# --- Target Stats ---
+# --- Target Stats (using cache) ---
 class TargetStats:
-    def __init__(self):
+    def __init__(self, cache: dict):
+        self.cache = cache
         self.counts = {k: 0 for k in ["actives", "decoys", "invalid", "salts", "metal", "pains", "lipinski", "veber"]}
         self.sums = {k: 0.0 for k in ["mw", "clogp", "tpsa", "fsp3", "rb"]}
         self.rbs = {"actives": [], "decoys": []}
 
     def update(self, smi: str, label: str):
-        from rdkit import Chem
-        if "." in smi:
-            self.counts["salts"] += 1
-        mol = Chem.MolFromSmiles(smi)
-        if mol is None:
+        if smi not in self.cache:
             self.counts["invalid"] += 1
             return
-        desc = DescriptorCalculator.calculate(mol)
+        
+        salts, desc = self.cache[smi]
+        
+        if salts:
+            self.counts["salts"] += 1
+        
+        if desc is None:
+            self.counts["invalid"] += 1
+            return
+        
         if label == "active":
             self.counts["actives"] += 1
             self.rbs["actives"].append(desc.rb)
         else:
             self.counts["decoys"] += 1
             self.rbs["decoys"].append(desc.rb)
-        if desc.has_metal: self.counts["metal"] += 1
-        if desc.pains_hit: self.counts["pains"] += 1
-        if desc.lip_pass: self.counts["lipinski"] += 1
-        if desc.veber_pass: self.counts["veber"] += 1
+        
+        if desc.has_metal:
+            self.counts["metal"] += 1
+        if desc.pains_hit:
+            self.counts["pains"] += 1
+        if desc.lip_pass:
+            self.counts["lipinski"] += 1
+        if desc.veber_pass:
+            self.counts["veber"] += 1
+        
         for key in self.sums:
             self.sums[key] += getattr(desc, key)
 
@@ -226,19 +283,17 @@ class TargetStats:
 
 # --- Target Processor ---
 class TargetProcessor:
-    def __init__(self, workers: int):
-        self.workers = workers
+    def __init__(self, cache: dict):
+        self.cache = cache
     
-    @staticmethod
-    def _process_one_target(task: tuple[BaseDataset, str, Path]) -> dict:
-        dataset_obj, target_name, target_path = task
-        stats = TargetStats()
+    def _process_one_target(self, dataset_obj: BaseDataset, target_name: str, target_path: Path) -> dict:
+        stats = TargetStats(self.cache)
         for smi, label in dataset_obj.read_target(target_path):
             stats.update(smi, label)
         return stats.report(dataset_obj.name, target_name)
     
     def process_all(self, datasets: list[BaseDataset]) -> pd.DataFrame:
-        print("\n[STEP 1] Processing individual targets...")
+        print("\n[STEP 2] Processing individual targets (from cache)...")
         tasks = []
         for dataset_obj in datasets:
             for target_name, target_path in dataset_obj.enumerate_targets():
@@ -247,29 +302,27 @@ class TargetProcessor:
         print(f"[INFO] Found {len(tasks)} targets across {len(datasets)} datasets")
         
         rows = []
-        with ProcessPoolExecutor(max_workers=self.workers) as exe:
-            futs = [exe.submit(self._process_one_target, t) for t in tasks]
-            for fut in tqdm(as_completed(futs), total=len(tasks), desc="Processing targets"):
-                res = fut.result()
-                if res:
-                    rows.append(res)
+        for dataset_obj, target_name, target_path in tqdm(tasks, desc="Processing targets"):
+            res = self._process_one_target(dataset_obj, target_name, target_path)
+            if res:
+                rows.append(res)
         
         print(f"[INFO] Completed processing {len(rows)} targets")
         return pd.DataFrame(rows).sort_values(["Dataset", "Target"]).reset_index(drop=True)
 
 # --- Unique Dataset Analyzer ---
 class UniqueDatasetAnalyzer:
-    def __init__(self, datasets: list[BaseDataset]):
+    def __init__(self, datasets: list[BaseDataset], cache: dict):
         self.datasets = datasets
+        self.cache = cache
         self._smiles_cache = None
-        self._descriptor_cache = None  # Cache descriptors to avoid recalculation
     
     def collect_smiles(self) -> dict[str, dict[str, set[str]]]:
         if self._smiles_cache is not None:
             print("[INFO] Using cached SMILES data")
             return self._smiles_cache
         
-        print("\n[STEP 2] Collecting unique SMILES from all datasets...")
+        print("\n[STEP 3] Collecting unique SMILES from all datasets...")
         dataset_to_smiles = defaultdict(lambda: {"active": set(), "inactive": set()})
         
         for dataset_obj in tqdm(self.datasets, desc="Scanning datasets"):
@@ -289,39 +342,20 @@ class UniqueDatasetAnalyzer:
         self._smiles_cache = dict(dataset_to_smiles)
         return self._smiles_cache
     
-    def calculate_descriptors_cached(self, smiles: list[str], workers: int, desc: str) -> dict:
-        """Calculate descriptors once and cache results"""
-        if self._descriptor_cache is None:
-            self._descriptor_cache = {}
-        
-        # Find which SMILES we haven't calculated yet
-        uncached_smiles = [s for s in smiles if s not in self._descriptor_cache]
-        
-        if uncached_smiles:
-            print(f"[INFO] Calculating descriptors for {len(uncached_smiles)} new SMILES ({len(smiles) - len(uncached_smiles)} cached)")
-            results = DescriptorCalculator.calculate_parallel(uncached_smiles, workers, desc)
-            
-            # Store results in cache (we'll need to recalculate since we need per-molecule data)
-            # But at least we avoid processing the same SMILES multiple times
-            for smi in uncached_smiles:
-                self._descriptor_cache[smi] = True
-        else:
-            print(f"[INFO] All {len(smiles)} SMILES already processed, using cached data")
-        
-        # Still need to calculate aggregate stats
-        return DescriptorCalculator.calculate_parallel(smiles, workers, desc)
-    
-    def create_summary(self, workers: int) -> pd.DataFrame:
-        print("\n[STEP 3] Creating dataset-level summary...")
+    def create_summary(self) -> pd.DataFrame:
+        print("\n[STEP 4] Creating dataset-level summary (from cache)...")
         ds_smiles = self.collect_smiles()
         rows = []
+        
         for dataset in tqdm(list(ds_smiles.keys()), desc="Processing datasets"):
             buckets = ds_smiles[dataset]
             smiles = list(buckets["active"] | buckets["inactive"])
-            agg = self.calculate_descriptors_cached(smiles, workers, f"{dataset} (all)")
+            
+            agg = aggregate_from_cache(smiles, self.cache)
             total = agg["NumberLigands"]
             denom = total if total > 0 else np.nan
             means_denom = agg["_Count_Desc"] if agg["_Count_Desc"] > 0 else np.nan
+            
             row = {
                 "Dataset": dataset,
                 "NumberLigandsUnique": int(total),
@@ -343,15 +377,17 @@ class UniqueDatasetAnalyzer:
                 "ActivesFraction": len(buckets["active"]) / denom if denom == denom else 0.0
             }
             rows.append(row)
+        
         return pd.DataFrame(rows).sort_values("Dataset")
     
-    def _summarize_bucket(self, smiles: list[str], workers: int, bucket_label: str, 
+    def _summarize_bucket(self, smiles: list[str], bucket_label: str, 
                           dataset: str, actives: set[str], inactives: set[str]) -> dict:
-        agg = self.calculate_descriptors_cached(smiles, workers, f"{dataset} ({bucket_label})")
+        agg = aggregate_from_cache(smiles, self.cache)
         total = agg["NumberLigands"]
         denom = total if total > 0 else np.nan
         means_denom = agg["_Count_Desc"] if agg["_Count_Desc"] > 0 else np.nan
         actives_fraction = len(actives) / (len(actives) + len(inactives)) if (len(actives) + len(inactives)) > 0 else 0.0
+        
         return {
             "Dataset": dataset, "Bucket": bucket_label,
             "NumberLigands": int(total),
@@ -371,12 +407,11 @@ class UniqueDatasetAnalyzer:
             "ActivesFraction": actives_fraction
         }
     
-    def create_summary_split(self, workers: int) -> pd.DataFrame:
-        print("\n[STEP 4] Creating split summary (actives/inactives/all)...")
+    def create_summary_split(self) -> pd.DataFrame:
+        print("\n[STEP 5] Creating split summary (actives/inactives/all - from cache)...")
         ds_smiles = self.collect_smiles()
         rows = []
         
-        # Process each dataset
         for dataset in tqdm(list(ds_smiles.keys()), desc="Processing datasets"):
             buckets = ds_smiles[dataset]
             actives = list(buckets["active"])
@@ -384,16 +419,14 @@ class UniqueDatasetAnalyzer:
             
             print(f"\n  Processing {dataset}:")
             print(f"    Actives: {len(actives)} molecules")
-            rows.append(self._summarize_bucket(actives, workers, "Actives", dataset, buckets["active"], buckets["inactive"]))
+            rows.append(self._summarize_bucket(actives, "Actives", dataset, buckets["active"], buckets["inactive"]))
             
             print(f"    Inactives: {len(inactives)} molecules")
-            rows.append(self._summarize_bucket(inactives, workers, "Inactives", dataset, buckets["active"], buckets["inactive"]))
+            rows.append(self._summarize_bucket(inactives, "Inactives", dataset, buckets["active"], buckets["inactive"]))
             
             print(f"    All: {len(set(actives) | set(inactives))} unique molecules")
-            # NOTE: We still calculate "All" separately because aggregate statistics 
-            # for combined data may differ from summing individual statistics
             all_ligs = list(set(actives) | set(inactives))
-            rows.append(self._summarize_bucket(all_ligs, workers, "All", dataset, buckets["active"], buckets["inactive"]))
+            rows.append(self._summarize_bucket(all_ligs, "All", dataset, buckets["active"], buckets["inactive"]))
         
         return pd.DataFrame(rows).sort_values(["Dataset", "Bucket"])
     
@@ -401,18 +434,23 @@ class UniqueDatasetAnalyzer:
         print("\n[STEP] Writing unique SMILES files...")
         outdir.mkdir(exist_ok=True, parents=True)
         ds_smiles = self.collect_smiles()
+        
         for dataset, buckets in ds_smiles.items():
             actives_file = outdir / f"{dataset}_actives.smi"
             inactives_file = outdir / f"{dataset}_inactives.smi"
             print(f"  Writing {dataset}...")
+            
             with open(actives_file, "w") as fa:
                 for smi in sorted(buckets["active"]):
                     fa.write(f"{smi}\n")
+            
             with open(inactives_file, "w") as fi:
                 for smi in sorted(buckets["inactive"]):
                     fi.write(f"{smi}\n")
+            
             print(f"    - {actives_file.name}: {len(buckets['active'])} actives")
             print(f"    - {inactives_file.name}: {len(buckets['inactive'])} inactives")
+        
         print(f"[OK] Wrote SMILES files to {outdir}")
 
 def main():
@@ -425,7 +463,7 @@ def main():
     args.outdir.mkdir(exist_ok=True)
 
     print("="*70)
-    print("DATASET ANALYSIS PIPELINE")
+    print("DATASET ANALYSIS PIPELINE (OPTIMIZED)")
     print("="*70)
     print(f"Output directory: {args.outdir}")
     print(f"Workers: {args.workers}")
@@ -452,14 +490,29 @@ def main():
         print("[ERROR] No valid datasets found!")
         return
 
-    analyzer = UniqueDatasetAnalyzer(datasets)
+    # STEP 1: Collect all unique SMILES
+    print("\n[STEP 1] Collecting all unique SMILES across datasets...")
+    all_smiles = set()
+    for dataset_obj in tqdm(datasets, desc="Scanning datasets"):
+        for target_name, target_path in dataset_obj.enumerate_targets():
+            for smi, label in dataset_obj.read_target(target_path):
+                all_smiles.add(smi)
+    
+    print(f"[INFO] Found {len(all_smiles)} unique SMILES total")
+    
+    # STEP 2: Calculate all descriptors once
+    descriptor_cache = DescriptorCalculator.calculate_all_parallel(list(all_smiles), args.workers)
+    print(f"[INFO] Descriptor cache built with {len(descriptor_cache)} entries")
+    
+    # Initialize analyzer with cache
+    analyzer = UniqueDatasetAnalyzer(datasets, descriptor_cache)
     
     if args.write_smiles_only:
         analyzer.write_smiles_files(args.outdir)
         return
 
-    # Process all targets
-    processor = TargetProcessor(args.workers)
+    # Process all targets using cache
+    processor = TargetProcessor(descriptor_cache)
     df = processor.process_all(datasets)
     
     print("\n[OUTPUT] Saving per-target summary...")
@@ -478,13 +531,13 @@ def main():
         print("  ! No LIT-PCBA data found")
     
     print("\n[OUTPUT] Creating dataset-level unique summary...")
-    dataset_unique_df = analyzer.create_summary(args.workers)
+    dataset_unique_df = analyzer.create_summary()
     output_file = args.outdir/"dataset_unique_summary.csv"
     dataset_unique_df.to_csv(output_file, index=False)
     print(f"  ✓ Saved: {output_file}")
     
     print("\n[OUTPUT] Creating split summary (actives/inactives)...")
-    dataset_unique_split_df = analyzer.create_summary_split(args.workers)
+    dataset_unique_split_df = analyzer.create_summary_split()
     output_file = args.outdir/"dataset_unique_summary_split.csv"
     dataset_unique_split_df.to_csv(output_file, index=False)
     print(f"  ✓ Saved: {output_file}")
