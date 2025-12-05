@@ -3,6 +3,7 @@ import argparse
 from pathlib import Path
 import pandas as pd
 from tqdm.auto import tqdm
+from tqdm.contrib.concurrent import process_map
 from rdkit import Chem
 from rdkit.Chem import Descriptors, rdMolDescriptors
 import matplotlib.pyplot as plt
@@ -12,7 +13,9 @@ COLOR_ACTIVE = "#0072B2"   # blue
 COLOR_INACTIVE = "#D55E00" # orange
 
 # --- Descriptor calculator ---
-def compute_desc(smi, dataset, bucket):
+def compute_desc(args):
+    """Worker function for parallel processing. Takes (smi, dataset, bucket) tuple."""
+    smi, dataset, bucket = args
     mol = Chem.MolFromSmiles(smi)
     if mol is None:
         return None
@@ -24,30 +27,59 @@ def compute_desc(smi, dataset, bucket):
         "rotbonds": Descriptors.NumRotatableBonds(mol),
     }
 
-# --- Stream SMILES and write incrementally ---
-def process_smiles(smiles_dir, out_csv):
+# --- Read all SMILES into memory ---
+def read_smiles(smiles_dir):
+    """Read all SMILES files and return list of (smiles, dataset, bucket) tuples."""
     files = list(Path(smiles_dir).glob("*_actives.smi")) + list(Path(smiles_dir).glob("*_inactives.smi"))
-    total_lines = sum(1 for f in files for _ in open(f))
+    
+    smiles_list = []
+    print("[INFO] Reading SMILES files...")
+    for f in tqdm(files, desc="Reading files"):
+        dataset = f.stem.replace("_actives", "").replace("_inactives", "")
+        bucket = "active" if "_actives" in f.stem else "inactive"
+        with open(f) as fh:
+            for line in fh:
+                smi = line.strip()
+                if smi:
+                    smiles_list.append((smi, dataset, bucket))
+    
+    print(f"[INFO] Read {len(smiles_list):,} SMILES strings")
+    return smiles_list
 
+# --- Parallel processing with batched CSV writes ---
+def process_smiles_parallel(smiles_dir, out_csv, batch_size=1000, max_workers=None):
+    """Process SMILES in parallel and write results in batches."""
+    
+    # Read all SMILES
+    smiles_list = read_smiles(smiles_dir)
+    
     if Path(out_csv).exists():
         Path(out_csv).unlink()
-
-    results = []
-    with tqdm(total=total_lines, desc="Processing SMILES") as pbar:
-        for f in files:
-            dataset = f.stem.replace("_actives", "").replace("_inactives", "")
-            bucket = "active" if "_actives" in f.stem else "inactive"
-            with open(f) as fh:
-                for line in fh:
-                    smi = line.strip()
-                    if not smi:
-                        continue
-                    row = compute_desc(smi, dataset, bucket)
-                    if not row:
-                        continue
-                    results.append(row)
-                    pd.DataFrame([row]).to_csv(out_csv, mode="a", header=not Path(out_csv).exists(), index=False)
-                    pbar.update(1)
+    
+    # Parallel compute with tqdm progress bar
+    print("[INFO] Computing descriptors in parallel...")
+    results = process_map(
+        compute_desc,
+        smiles_list,
+        max_workers=max_workers,
+        chunksize=100,
+        desc="Processing SMILES"
+    )
+    
+    # Filter out None results
+    results = [r for r in results if r is not None]
+    
+    # Write in batches
+    print(f"[INFO] Writing {len(results):,} results to CSV in batches...")
+    for i in tqdm(range(0, len(results), batch_size), desc="Writing CSV"):
+        batch = results[i:i+batch_size]
+        pd.DataFrame(batch).to_csv(
+            out_csv, 
+            mode="a", 
+            header=(i == 0),  # Only write header for first batch
+            index=False
+        )
+    
     print(f"[OK] Processed {len(results):,} molecules and wrote to {out_csv}")
     return pd.DataFrame(results)
 
@@ -231,6 +263,10 @@ def main():
                         help="Skip recomputing descriptors, read ligand_descriptors.csv instead")
     parser.add_argument("--summary-csv", type=Path, default=Path("dataset_unique_summary_split.csv"),
                         help="Path to dataset_unique_summary_split.csv for compliance plotting")
+    parser.add_argument("--batch-size", type=int, default=1000,
+                        help="Batch size for CSV writes (default: 1000)")
+    parser.add_argument("--max-workers", type=int, default=None,
+                        help="Max parallel workers (default: CPU count)")
     args = parser.parse_args()
 
     args.outdir.mkdir(exist_ok=True)
@@ -240,7 +276,7 @@ def main():
         print(f"[INFO] Reading existing {out_csv}")
         df = pd.read_csv(out_csv)
     else:
-        df = process_smiles(args.smiles_dir, out_csv)
+        df = process_smiles_parallel(args.smiles_dir, out_csv, args.batch_size, args.max_workers)
 
     print("[INFO] Making violin plots (combined and for each dataset)...")
     violin_plot(df, "mw", "Molecular weight (Da)", "Molecular Weight Distribution", args.outdir/"violin_mw.png")
