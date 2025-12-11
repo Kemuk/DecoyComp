@@ -10,7 +10,7 @@ from pathlib import Path
 from tqdm.auto import tqdm
 
 from molecular_utils import DescriptorCalculator
-from datasets import LitPCBADataset, DudeZDataset, Dekois2Dataset, MUVDataset
+from datasets import LitPCBADataset, DudeZDataset, Dekois2Dataset, MUVDataset, DCOIDDataset
 from analyser import DatasetAnalyser
 
 
@@ -63,6 +63,9 @@ def main():
         elif name == "DEKOIS2":
             datasets.append(Dekois2Dataset("DEKOIS2", root))
             print(f"  ✓ DEKOIS2: {root}")
+        elif name == "D-COID":
+            datasets.append(DCOIDDataset("D-COID", root))
+            print(f"  ✓ D-COID: {root}")
     
     # MUV dataset (API-based)
     if args.include_muv:
