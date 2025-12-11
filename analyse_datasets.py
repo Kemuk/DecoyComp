@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Dataset analysis pipeline for file-based benchmark datasets
-(LIT-PCBA, DUDE-Z, DEKOIS2)
+Dataset analysis pipeline for benchmark datasets
+(LIT-PCBA, DUDE-Z, DEKOIS2, MUV)
 """
 import os
 import argparse
@@ -10,35 +10,47 @@ from pathlib import Path
 from tqdm.auto import tqdm
 
 from molecular_utils import DescriptorCalculator
-from datasets import LitPCBADataset, DudeZDataset, Dekois2Dataset
+from datasets import LitPCBADataset, DudeZDataset, Dekois2Dataset, MUVDataset
 from analyser import DatasetAnalyser
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Analyse file-based benchmark datasets")
+    parser = argparse.ArgumentParser(description="Analyse benchmark datasets")
     parser.add_argument("--roots", nargs="*", default=["LIT-PCBA", "DEKOIS2", "DUDE-Z"],
-                        help="Root directories for datasets")
+                        help="Root directories for file-based datasets")
     parser.add_argument("--workers", type=int, default=os.cpu_count(),
                         help="Number of parallel workers")
-    parser.add_argument("--outdir", type=Path, default=Path("."),
+    parser.add_argument("--outdir", type=Path, default=Path("results"),
                         help="Output directory")
+    parser.add_argument("--include-muv", action="store_true", default=True,
+                        help="Include MUV dataset from DeepChem (default: True)")
+    parser.add_argument("--exclude-muv", dest="include_muv", action="store_false",
+                        help="Exclude MUV dataset")
+    parser.add_argument("--muv-data-dir", type=Path, default=None,
+                        help="DeepChem data directory for MUV (default: ~/.deepchem/datasets)")
     parser.add_argument("--write-smiles-only", action="store_true",
                         help="Only write SMILES files, skip analysis")
     args = parser.parse_args()
     
     args.outdir.mkdir(exist_ok=True)
     
+    dataset_names = list(args.roots)
+    if args.include_muv:
+        dataset_names.append("MUV")
+    
     print("="*70)
     print("DATASET ANALYSIS PIPELINE")
     print("="*70)
     print(f"Output directory: {args.outdir}")
     print(f"Workers: {args.workers}")
-    print(f"Datasets to process: {', '.join(args.roots)}")
+    print(f"Datasets to process: {', '.join(dataset_names)}")
     print("="*70)
     
     # Initialise datasets
     print("\n[INIT] Initialising datasets...")
     datasets = []
+    
+    # File-based datasets
     for root_str in args.roots:
         root = Path(root_str)
         name = root.name
@@ -51,6 +63,19 @@ def main():
         elif name == "DEKOIS2":
             datasets.append(Dekois2Dataset("DEKOIS2", root))
             print(f"  ✓ DEKOIS2: {root}")
+    
+    # MUV dataset (API-based)
+    if args.include_muv:
+        try:
+            muv_dataset = MUVDataset(data_dir=args.muv_data_dir)
+            muv_dataset.load()
+            datasets.append(muv_dataset)
+            print(f"  ✓ MUV: DeepChem (17 targets)")
+        except ImportError:
+            print("  ✗ MUV: DeepChem not installed (skipping)")
+            print("    Install with: pip install deepchem --break-system-packages")
+        except Exception as e:
+            print(f"  ✗ MUV: Failed to load ({e})")
     
     if not datasets:
         print("[ERROR] No valid datasets found!")

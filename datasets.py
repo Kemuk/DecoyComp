@@ -9,8 +9,7 @@ from collections import defaultdict
 
 import numpy as np
 from tqdm.auto import tqdm
-import deepchem as dc
-        
+
 
 def read_smi_file(filepath: Path, label: str):
     """Helper function to read SMILES files"""
@@ -127,13 +126,18 @@ class MUVDataset(APIBasedDataset):
             return self
         
         print(f"\n[INFO] Loading {self.name} dataset from DeepChem...")
-    
         
-        tasks, datasets, transformers = dc.molnet.load_muv(
-            featurizer='smiles',
-            splitter='random',
-            data_dir=str(self.root_path)
-        )
+        import warnings
+        import deepchem as dc
+        
+        # Suppress DeepChem's deprecation warnings
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*MorganGenerator.*")
+            tasks, datasets, transformers = dc.molnet.load_muv(
+                featurizer='raw',
+                splitter='random',
+                data_dir=str(self.root_path)
+            )
         
         self.tasks = tasks
         train_dataset, valid_dataset, test_dataset = datasets
