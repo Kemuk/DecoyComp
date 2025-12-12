@@ -10,7 +10,7 @@ from pathlib import Path
 from tqdm.auto import tqdm
 
 from molecular_utils import DescriptorCalculator
-from datasets import LitPCBADataset, DudeZDataset, Dekois2Dataset, MUVDataset
+from datasets import LitPCBADataset, DudeZDataset, Dekois2Dataset, MUVDataset, DCOIDDataset
 from analyser import DatasetAnalyser
 
 
@@ -22,6 +22,8 @@ def main():
                         help="Number of parallel workers")
     parser.add_argument("--outdir", type=Path, default=Path("results"),
                         help="Output directory")
+    parser.add_argument("--smiles-dir", type=Path, default=Path("smiles"),
+                        help="Directory for SMILES files (default: smiles)")
     parser.add_argument("--include-muv", action="store_true", default=True,
                         help="Include MUV dataset from DeepChem (default: True)")
     parser.add_argument("--exclude-muv", dest="include_muv", action="store_false",
@@ -63,6 +65,9 @@ def main():
         elif name == "DEKOIS2":
             datasets.append(Dekois2Dataset("DEKOIS2", root))
             print(f"  ✓ DEKOIS2: {root}")
+        elif name == "D-COID":
+            datasets.append(DCOIDDataset("D-COID", root))
+            print(f"  ✓ D-COID: {root}")
     
     # MUV dataset (API-based)
     if args.include_muv:
@@ -99,7 +104,7 @@ def main():
     analyser = DatasetAnalyser(datasets, descriptor_cache)
     
     if args.write_smiles_only:
-        analyser.write_smiles_files(args.outdir)
+        analyser.write_smiles_files(args.smiles_dir)
         return
     
     # Process all targets
@@ -131,7 +136,10 @@ def main():
     output_file = args.outdir / "dataset_unique_summary_split.csv"
     dataset_unique_split_df.to_csv(output_file, index=False)
     print(f"  ✓ Saved: {output_file}")
-    
+
+    print("\n[OUTPUT] Writing SMILES files...")
+    analyser.write_smiles_files(args.smiles_dir)
+
     print("\n" + "="*70)
     print("[OK] Analysis complete!")
     print("="*70)

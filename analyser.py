@@ -235,25 +235,44 @@ class DatasetAnalyser:
         }
     
     def write_smiles_files(self, outdir: Path):
-        """Write unique SMILES files for each dataset"""
+        """Write unique SMILES files for each dataset (skip if already exists)"""
         print("\n[INFO] Writing unique SMILES files...")
         outdir.mkdir(exist_ok=True, parents=True)
         ds_smiles = self.collect_smiles()
-        
+
+        files_written = 0
+        files_skipped = 0
+
         for dataset, buckets in ds_smiles.items():
             actives_file = outdir / f"{dataset}_actives.smi"
             inactives_file = outdir / f"{dataset}_inactives.smi"
+
+            # Check if both files already exist
+            if actives_file.exists() and inactives_file.exists():
+                print(f"  Skipping {dataset} (files already exist)")
+                files_skipped += 2
+                continue
+
             print(f"  Writing {dataset}...")
-            
-            with open(actives_file, "w") as fa:
-                for smi in sorted(buckets["active"]):
-                    fa.write(f"{smi}\n")
-            
-            with open(inactives_file, "w") as fi:
-                for smi in sorted(buckets["inactive"]):
-                    fi.write(f"{smi}\n")
-            
-            print(f"    - {actives_file.name}: {len(buckets['active'])} actives")
-            print(f"    - {inactives_file.name}: {len(buckets['inactive'])} inactives")
-        
-        print(f"[OK] Wrote SMILES files to {outdir}")
+
+            if not actives_file.exists():
+                with open(actives_file, "w") as fa:
+                    for smi in sorted(buckets["active"]):
+                        fa.write(f"{smi}\n")
+                print(f"    - {actives_file.name}: {len(buckets['active'])} actives")
+                files_written += 1
+            else:
+                print(f"    - {actives_file.name}: skipped (already exists)")
+                files_skipped += 1
+
+            if not inactives_file.exists():
+                with open(inactives_file, "w") as fi:
+                    for smi in sorted(buckets["inactive"]):
+                        fi.write(f"{smi}\n")
+                print(f"    - {inactives_file.name}: {len(buckets['inactive'])} inactives")
+                files_written += 1
+            else:
+                print(f"    - {inactives_file.name}: skipped (already exists)")
+                files_skipped += 1
+
+        print(f"[OK] SMILES files in {outdir}: {files_written} written, {files_skipped} skipped")
