@@ -228,24 +228,41 @@ class DCOIDDataset(FileBasedDataset):
         parser = PDBParser(QUIET=True)
         structure = parser.get_structure('complex', str(pdb_path))
 
-        # Find the ligand residue
-        ligand_residue = None
-        ligand_chain = None
+        # Blocklist of common non-drug heteroatoms to exclude
+        EXCLUDE_RESIDUES = {
+            'HOH', 'WAT',  # Water
+            'SO4', 'PO4', 'GOL', 'EDO', 'PEG',  # Common crystallization agents
+            'MG', 'CA', 'ZN', 'MN', 'FE', 'CU', 'NA', 'CL', 'K',  # Metal ions
+            'ACT', 'DMS', 'ACE', 'NH2',  # Small molecules
+            'BME', 'DTT', 'MPD',  # Reducing agents
+        }
+
+        # Find all HETATM residues that could be the ligand
+        candidate_ligands = []
         for model in structure:
             for chain in model:
                 for residue in chain:
-                    resname = residue.get_resname().strip()
-                    if resname == ligand_code:
-                        ligand_residue = residue
-                        ligand_chain = chain
-                        break
-                if ligand_residue:
-                    break
-            if ligand_residue:
-                break
+                    # Only consider heteroatoms (not regular amino acids)
+                    if residue.id[0].strip():  # Has hetero flag
+                        resname = residue.get_resname().strip()
 
-        if not ligand_residue:
-            return None, f"Ligand {ligand_code} not found in structure"
+                        # Skip excluded residues
+                        if resname not in EXCLUDE_RESIDUES:
+                            num_atoms = len(list(residue.get_atoms()))
+                            candidate_ligands.append((residue, chain, resname, num_atoms))
+
+        if not candidate_ligands:
+            return None, f"No suitable ligand found (expected {ligand_code})"
+
+        # If multiple candidates, choose the one with most atoms (likely the drug-like molecule)
+        candidate_ligands.sort(key=lambda x: x[3], reverse=True)
+        ligand_residue, ligand_chain, actual_resname, num_atoms = candidate_ligands[0]
+
+        # Warn if multiple candidates found
+        if len(candidate_ligands) > 1:
+            other_ligands = [f"{name}({n})" for _, _, name, n in candidate_ligands[1:]]
+            print(f"[DEBUG] {pdb_path.name}: Multiple ligands found, using {actual_resname}({num_atoms} atoms). "
+                  f"Others: {', '.join(other_ligands)}")
 
         # Create PDB block for just the ligand
         pdb_lines = []
@@ -336,17 +353,15 @@ class DCOIDDataset(FileBasedDataset):
             target_id = ligand_id[:4]
 
             # Extract ligand code (between first and second underscore)
+            # Note: This is just for reference/logging, not used for matching
             parts = ligand_id.split('_')
-            ligand_code = parts[1] if len(parts) > 1 else None
+            ligand_code = parts[1] if len(parts) > 1 else "UNK"
 
             smiles = None
             error = None
 
             if not pdb_path.exists():
                 error = "PDB file not found"
-                failed_extractions.append((ligand_id, error))
-            elif not ligand_code:
-                error = "Could not parse ligand code from ligand_id"
                 failed_extractions.append((ligand_id, error))
             else:
                 try:
