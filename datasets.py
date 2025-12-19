@@ -49,58 +49,268 @@ class FileBasedDataset(BaseDataset):
 
 
 class LitPCBADataset(FileBasedDataset):
-    """LIT-PCBA dataset"""
-    
-    def enumerate_targets(self):
+    """LIT-PCBA dataset with parquet caching"""
+
+    def __init__(self, name: str, root_path: Path):
+        super().__init__(name, root_path)
+        self._metadata = None
+        self._ensure_metadata()
+
+    def _ensure_metadata(self):
+        """Ensure metadata cache exists, create if needed"""
+        cache_path = self.root_path / "litpcba_metadata.parquet"
+
+        if cache_path.exists():
+            print(f"[INFO] Loading LIT-PCBA metadata cache from {cache_path}")
+            self._metadata = pd.read_parquet(cache_path)
+            print(f"[INFO] Loaded {len(self._metadata)} molecules from cache")
+        else:
+            print(f"[INFO] LIT-PCBA metadata cache not found, scanning SMILES files...")
+            self._build_cache(cache_path)
+
+    def _build_cache(self, cache_path: Path):
+        """Build metadata cache from SMILES files"""
+        records = []
+
         if not self.root_path.is_dir():
+            print(f"[WARNING] LIT-PCBA root path not found: {self.root_path}")
+            self._metadata = pd.DataFrame(columns=['target_id', 'smiles', 'label'])
             return
-        for entry in sorted(self.root_path.iterdir()):
-            if entry.is_dir():
-                yield entry.name, entry
-    
-    def read_target(self, target_path: Path):
-        yield from read_smi_file(target_path / "actives.smi", "active")
-        yield from read_smi_file(target_path / "inactives.smi", "inactive")
+
+        for entry in tqdm(sorted(self.root_path.iterdir()), desc="Scanning LIT-PCBA targets"):
+            if not entry.is_dir():
+                continue
+
+            target_id = entry.name
+
+            # Read actives
+            actives_file = entry / "actives.smi"
+            if actives_file.is_file():
+                with open(actives_file, "r", encoding="utf-8", errors="ignore") as fh:
+                    for line in fh:
+                        parts = line.strip().split()
+                        if parts:
+                            records.append({
+                                'target_id': target_id,
+                                'smiles': parts[0],
+                                'label': 'active'
+                            })
+
+            # Read inactives
+            inactives_file = entry / "inactives.smi"
+            if inactives_file.is_file():
+                with open(inactives_file, "r", encoding="utf-8", errors="ignore") as fh:
+                    for line in fh:
+                        parts = line.strip().split()
+                        if parts:
+                            records.append({
+                                'target_id': target_id,
+                                'smiles': parts[0],
+                                'label': 'inactive'
+                            })
+
+        self._metadata = pd.DataFrame(records)
+
+        if len(self._metadata) > 0:
+            self._metadata.to_parquet(cache_path)
+            print(f"[INFO] Saved LIT-PCBA metadata cache to {cache_path} ({len(self._metadata)} molecules)")
+        else:
+            print(f"[WARNING] No molecules found in LIT-PCBA dataset")
+
+    def enumerate_targets(self):
+        """Enumerate all targets in LIT-PCBA"""
+        if self._metadata is None or self._metadata.empty:
+            return
+
+        for target_id in sorted(self._metadata['target_id'].unique()):
+            yield target_id, target_id
+
+    def read_target(self, target_path):
+        """Read SMILES for a specific target"""
+        if self._metadata is None or self._metadata.empty:
+            return
+
+        target_id = target_path if isinstance(target_path, str) else target_path.name
+        target_data = self._metadata[self._metadata['target_id'] == target_id]
+
+        for _, row in target_data.iterrows():
+            yield row['smiles'], row['label']
 
 
 class DudeZDataset(FileBasedDataset):
-    """DUDE-Z dataset"""
-    
-    def enumerate_targets(self):
+    """DUDE-Z dataset with parquet caching"""
+
+    def __init__(self, name: str, root_path: Path):
+        super().__init__(name, root_path)
+        self._metadata = None
+        self._ensure_metadata()
+
+    def _ensure_metadata(self):
+        """Ensure metadata cache exists, create if needed"""
+        cache_path = self.root_path / "dudez_metadata.parquet"
+
+        if cache_path.exists():
+            print(f"[INFO] Loading DUDE-Z metadata cache from {cache_path}")
+            self._metadata = pd.read_parquet(cache_path)
+            print(f"[INFO] Loaded {len(self._metadata)} molecules from cache")
+        else:
+            print(f"[INFO] DUDE-Z metadata cache not found, scanning SMILES files...")
+            self._build_cache(cache_path)
+
+    def _build_cache(self, cache_path: Path):
+        """Build metadata cache from SMILES files"""
+        records = []
+
         if not self.root_path.is_dir():
+            print(f"[WARNING] DUDE-Z root path not found: {self.root_path}")
+            self._metadata = pd.DataFrame(columns=['target_id', 'smiles', 'label'])
             return
-        for entry in sorted(self.root_path.iterdir()):
-            if entry.is_dir():
-                yield entry.name, entry
-    
-    def read_target(self, target_path: Path):
-        yield from read_smi_file(target_path / "actives_final.ism", "active")
-        yield from read_smi_file(target_path / "decoys_final.ism", "decoy")
+
+        for entry in tqdm(sorted(self.root_path.iterdir()), desc="Scanning DUDE-Z targets"):
+            if not entry.is_dir():
+                continue
+
+            target_id = entry.name
+
+            # Read actives
+            actives_file = entry / "actives_final.ism"
+            if actives_file.is_file():
+                with open(actives_file, "r", encoding="utf-8", errors="ignore") as fh:
+                    for line in fh:
+                        parts = line.strip().split()
+                        if parts:
+                            records.append({
+                                'target_id': target_id,
+                                'smiles': parts[0],
+                                'label': 'active'
+                            })
+
+            # Read decoys
+            decoys_file = entry / "decoys_final.ism"
+            if decoys_file.is_file():
+                with open(decoys_file, "r", encoding="utf-8", errors="ignore") as fh:
+                    for line in fh:
+                        parts = line.strip().split()
+                        if parts:
+                            records.append({
+                                'target_id': target_id,
+                                'smiles': parts[0],
+                                'label': 'decoy'
+                            })
+
+        self._metadata = pd.DataFrame(records)
+
+        if len(self._metadata) > 0:
+            self._metadata.to_parquet(cache_path)
+            print(f"[INFO] Saved DUDE-Z metadata cache to {cache_path} ({len(self._metadata)} molecules)")
+        else:
+            print(f"[WARNING] No molecules found in DUDE-Z dataset")
+
+    def enumerate_targets(self):
+        """Enumerate all targets in DUDE-Z"""
+        if self._metadata is None or self._metadata.empty:
+            return
+
+        for target_id in sorted(self._metadata['target_id'].unique()):
+            yield target_id, target_id
+
+    def read_target(self, target_path):
+        """Read SMILES for a specific target"""
+        if self._metadata is None or self._metadata.empty:
+            return
+
+        target_id = target_path if isinstance(target_path, str) else target_path.name
+        target_data = self._metadata[self._metadata['target_id'] == target_id]
+
+        for _, row in target_data.iterrows():
+            yield row['smiles'], row['label']
 
 
 class Dekois2Dataset(FileBasedDataset):
-    """DEKOIS2 dataset"""
-    
-    def enumerate_targets(self):
+    """DEKOIS2 dataset with parquet caching"""
+
+    def __init__(self, name: str, root_path: Path):
+        super().__init__(name, root_path)
+        self._metadata = None
+        self._ensure_metadata()
+
+    def _ensure_metadata(self):
+        """Ensure metadata cache exists, create if needed"""
+        cache_path = self.root_path / "dekois2_metadata.parquet"
+
+        if cache_path.exists():
+            print(f"[INFO] Loading DEKOIS2 metadata cache from {cache_path}")
+            self._metadata = pd.read_parquet(cache_path)
+            print(f"[INFO] Loaded {len(self._metadata)} molecules from cache")
+        else:
+            print(f"[INFO] DEKOIS2 metadata cache not found, scanning SMILES files...")
+            self._build_cache(cache_path)
+
+    def _build_cache(self, cache_path: Path):
+        """Build metadata cache from SMILES files"""
+        records = []
+
         if not self.root_path.is_dir():
+            print(f"[WARNING] DEKOIS2 root path not found: {self.root_path}")
+            self._metadata = pd.DataFrame(columns=['target_id', 'smiles', 'label'])
             return
-        for entry in sorted(self.root_path.iterdir()):
-            if entry.is_dir():
-                yield entry.name, entry
-    
-    def read_target(self, target_path: Path):
-        smi_path = target_path / "active_decoys.smi"
-        if not smi_path.is_file():
+
+        for entry in tqdm(sorted(self.root_path.iterdir()), desc="Scanning DEKOIS2 targets"):
+            if not entry.is_dir():
+                continue
+
+            target_id = entry.name
+            smi_path = entry / "active_decoys.smi"
+
+            if not smi_path.is_file():
+                continue
+
+            with open(smi_path, "r", encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    parts = line.strip().split()
+                    if len(parts) >= 2:
+                        smi, lig_id = parts[0], parts[1]
+
+                        # Determine label based on ligand ID prefix
+                        if lig_id.startswith("BDB"):
+                            label = "active"
+                        elif lig_id.startswith("ZINC"):
+                            label = "decoy"
+                        else:
+                            continue  # Skip unknown prefixes
+
+                        records.append({
+                            'target_id': target_id,
+                            'smiles': smi,
+                            'label': label
+                        })
+
+        self._metadata = pd.DataFrame(records)
+
+        if len(self._metadata) > 0:
+            self._metadata.to_parquet(cache_path)
+            print(f"[INFO] Saved DEKOIS2 metadata cache to {cache_path} ({len(self._metadata)} molecules)")
+        else:
+            print(f"[WARNING] No molecules found in DEKOIS2 dataset")
+
+    def enumerate_targets(self):
+        """Enumerate all targets in DEKOIS2"""
+        if self._metadata is None or self._metadata.empty:
             return
-        with open(smi_path, "r", encoding="utf-8", errors="ignore") as fh:
-            for line in fh:
-                parts = line.strip().split()
-                if len(parts) >= 2:
-                    smi, lig_id = parts[0], parts[1]
-                    if lig_id.startswith("BDB"):
-                        yield smi, "active"
-                    elif lig_id.startswith("ZINC"):
-                        yield smi, "decoy"
+
+        for target_id in sorted(self._metadata['target_id'].unique()):
+            yield target_id, target_id
+
+    def read_target(self, target_path):
+        """Read SMILES for a specific target"""
+        if self._metadata is None or self._metadata.empty:
+            return
+
+        target_id = target_path if isinstance(target_path, str) else target_path.name
+        target_data = self._metadata[self._metadata['target_id'] == target_id]
+
+        for _, row in target_data.iterrows():
+            yield row['smiles'], row['label']
 
 
 class APIBasedDataset(BaseDataset):
