@@ -68,7 +68,7 @@ class TargetStats:
             "Dataset": dataset,
             "Target": target,
             "NumberActives": self.counts["actives"],
-            "NumberDecoys/Inactives": self.counts["decoys"],
+            "NumberInactives": self.counts["decoys"],
             "NumberLigandsTotal": total,
             "NumberInvalidSMILES": self.counts["invalid"],
             "NumberWithSalts": self.counts["salts"],

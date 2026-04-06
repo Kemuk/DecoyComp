@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Visualization and descriptor analysis with Polars and joblib.
+Visualization and descriptor analysis using Polars and joblib.
 
-Uses Polars for fast data loading and processing, converts to pandas
-only for matplotlib/seaborn visualization compatibility.
+Uses Polars for all data manipulation; numpy arrays are passed directly
+to matplotlib — no pandas dependency.
 """
 import argparse
 from pathlib import Path
 
 import polars as pl
-import pandas as pd
+import numpy as np
 from joblib import Parallel, delayed
 from tqdm.auto import tqdm
 from rdkit import Chem
@@ -57,49 +57,38 @@ def read_smiles(smiles_dir: Path) -> list[tuple[str, str, str]]:
 
 def process_smiles_parallel(
     smiles_dir: Path,
-    out_csv: Path,
-    batch_size: int = 1000,
+    out_parquet: Path,
     max_workers: int = -1
 ) -> pl.DataFrame:
-    """Process SMILES in parallel and write results in batches using joblib."""
+    """Process SMILES in parallel and write results as Parquet using joblib."""
 
-    # Read all SMILES
     smiles_list = read_smiles(smiles_dir)
 
-    if out_csv.exists():
-        out_csv.unlink()
-
-    # Parallel compute with joblib
     print(f"[INFO] Computing descriptors in parallel with {max_workers} workers...")
     results = Parallel(n_jobs=max_workers, backend="loky", return_as="generator")(
         delayed(compute_desc)(args) for args in smiles_list
     )
 
-    # Collect results with progress bar, filtering None
     valid_results = []
     for result in tqdm(results, total=len(smiles_list), desc="Processing SMILES"):
         if result is not None:
             valid_results.append(result)
 
-    print(f"[INFO] Writing {len(valid_results):,} results to CSV...")
-
-    # Create Polars DataFrame for efficient processing
+    print(f"[INFO] Writing {len(valid_results):,} results to {out_parquet}...")
     df = pl.DataFrame(valid_results)
+    df.write_parquet(out_parquet)
 
-    # Write to CSV (Polars is much faster than pandas for this)
-    df.write_csv(out_csv)
-
-    print(f"[OK] Processed {len(valid_results):,} molecules and wrote to {out_csv}")
+    print(f"[OK] Processed {len(valid_results):,} molecules")
     return df
 
 
-def plot_and_save_single_violin(df_single: pd.DataFrame, ds_name: str, column: str,
+def plot_and_save_single_violin(df_single: pl.DataFrame, ds_name: str, column: str,
                                  ylabel: str, title: str, filename: Path):
     """Generates and saves a violin plot for a single dataset."""
     fig, ax = plt.subplots(figsize=(6, 6))
 
-    act = df_single[df_single["bucket"] == "active"][column].values
-    inact = df_single[df_single["bucket"] == "inactive"][column].values
+    act = df_single.filter(pl.col("bucket") == "active").get_column(column).to_numpy()
+    inact = df_single.filter(pl.col("bucket") == "inactive").get_column(column).to_numpy()
 
     data = []
     labels = []
@@ -130,25 +119,26 @@ def plot_and_save_single_violin(df_single: pd.DataFrame, ds_name: str, column: s
     plt.close(fig)
 
 
-def violin_plot(df: pd.DataFrame, column: str, ylabel: str, title: str, filename: Path):
+def violin_plot(df: pl.DataFrame, column: str, ylabel: str, title: str, filename: Path):
     """Create violin plots (both combined and individual per dataset)."""
-    # Part 1: Loop through datasets to create and save individual plots
-    for ds in df["dataset"].unique():
-        df_single = df[df["dataset"] == ds]
+    datasets = df.get_column("dataset").unique().to_list()
+
+    for ds in datasets:
+        df_single = df.filter(pl.col("dataset") == ds)
         p = Path(filename)
         single_filename = p.parent / f"{p.stem}_{ds}{p.suffix}"
         plot_and_save_single_violin(df_single, ds, column, ylabel, title, single_filename)
 
-    # Part 2: Create and save the combined plot
+    # Combined plot across all datasets
     fig, ax = plt.subplots(figsize=(10, 6))
     data_combined = []
     positions_combined = []
     labels_combined = []
     i = 1
 
-    for ds in sorted(df["dataset"].unique()):
-        act = df[(df["dataset"] == ds) & (df["bucket"] == "active")][column].values
-        inact = df[(df["dataset"] == ds) & (df["bucket"] == "inactive")][column].values
+    for ds in sorted(datasets):
+        act = df.filter((pl.col("dataset") == ds) & (pl.col("bucket") == "active")).get_column(column).to_numpy()
+        inact = df.filter((pl.col("dataset") == ds) & (pl.col("bucket") == "inactive")).get_column(column).to_numpy()
 
         if len(act) > 0:
             data_combined.append(act)
@@ -181,35 +171,37 @@ def violin_plot(df: pd.DataFrame, column: str, ylabel: str, title: str, filename
     plt.close(fig)
 
 
-def compliance_bar_from_summary(summary_csv: Path, outdir: Path):
-    """Create compliance bar charts from summary CSV."""
-    # Use Polars for fast loading, convert to pandas for plotting
-    df_pl = pl.read_csv(summary_csv)
-    df = df_pl.filter(pl.col("Bucket").is_in(["Actives", "Inactives"])).to_pandas()
+def compliance_bar_from_summary(summary_parquet: Path, outdir: Path):
+    """Create compliance bar charts from split summary Parquet."""
+    df = pl.read_parquet(summary_parquet).filter(pl.col("Bucket").is_in(["Actives", "Inactives"]))
 
-    comp = df.melt(
-        id_vars=["Dataset", "Bucket"],
-        value_vars=["LipinskiComplianceRate", "VeberComplianceRate"],
-        var_name="rule", value_name="rate"
-    )
-    comp["rate"] = comp["rate"] * 100  # %
+    comp = df.unpivot(
+        on=["LipinskiComplianceRate", "VeberComplianceRate"],
+        index=["Dataset", "Bucket"],
+        variable_name="rule",
+        value_name="rate",
+    ).with_columns((pl.col("rate") * 100).alias("rate"))
 
     buckets = ["Actives", "Inactives"]
+    datasets = sorted(comp.get_column("Dataset").unique().to_list())
+    x = np.arange(len(datasets))
+    width = 0.35
 
     for rule, title in [("LipinskiComplianceRate", "Lipinski Compliance Rates"),
                         ("VeberComplianceRate", "Veber Compliance Rates")]:
         fig, ax = plt.subplots(figsize=(10, 6))
-        datasets = comp["Dataset"].unique()
-        x = range(len(datasets))
-        width = 0.35
 
         for j, bucket in enumerate(buckets):
-            sub = comp[(comp["rule"] == rule) & (comp["Bucket"] == bucket)]
+            sub = comp.filter((pl.col("rule") == rule) & (pl.col("Bucket") == bucket))
+            rates = [
+                sub.filter(pl.col("Dataset") == ds).get_column("rate").to_list()[0]
+                if sub.filter(pl.col("Dataset") == ds).height > 0 else 0.0
+                for ds in datasets
+            ]
             color = COLOR_ACTIVE if bucket == "Actives" else COLOR_INACTIVE
-            ax.bar([xi + j * width for xi in x],
-                   sub["rate"], width=width, label=bucket, color=color)
+            ax.bar(x + j * width, rates, width=width, label=bucket, color=color)
 
-        ax.set_xticks([xi + width / 2 for xi in x])
+        ax.set_xticks(x + width / 2)
         ax.set_xticklabels(datasets, rotation=45, ha="right")
         ax.set_ylabel("Compliance rate (%)")
         ax.set_title(title)
@@ -221,19 +213,20 @@ def compliance_bar_from_summary(summary_csv: Path, outdir: Path):
         plt.close(fig)
 
 
-def scatter_plot_grouped(df: pd.DataFrame, xcol: str, ycol: str,
+def scatter_plot_grouped(df: pl.DataFrame, xcol: str, ycol: str,
                           xlabel: str, ylabel: str, title: str, filename: Path):
     """Create grouped scatter plots."""
-    datasets = df["dataset"].unique()
+    datasets = df.get_column("dataset").unique().to_list()
     fig, axes = plt.subplots(1, len(datasets), figsize=(6 * len(datasets), 5), sharey=True)
 
     if len(datasets) == 1:
         axes = [axes]
 
     for ax, ds in zip(axes, datasets):
-        sub = df[df["dataset"] == ds]
-        colors = sub["bucket"].map({"active": COLOR_ACTIVE, "inactive": COLOR_INACTIVE})
-        ax.scatter(sub[xcol], sub[ycol], c=colors, alpha=0.3, s=10)
+        sub = df.filter(pl.col("dataset") == ds)
+        colors = sub.get_column("bucket").replace({"active": COLOR_ACTIVE, "inactive": COLOR_INACTIVE}).to_list()
+        ax.scatter(sub.get_column(xcol).to_numpy(), sub.get_column(ycol).to_numpy(),
+                   c=colors, alpha=0.3, s=10)
         ax.set_title(ds)
         ax.set_xlabel(xlabel)
         if ax is axes[0]:
@@ -245,21 +238,21 @@ def scatter_plot_grouped(df: pd.DataFrame, xcol: str, ycol: str,
     plt.close(fig)
 
 
-def hist_overlay_grouped(df: pd.DataFrame, column: str, xlabel: str,
+def hist_overlay_grouped(df: pl.DataFrame, column: str, xlabel: str,
                           title: str, filename: Path, bins: int = 50):
     """Create grouped histogram overlays."""
-    datasets = df["dataset"].unique()
+    datasets = df.get_column("dataset").unique().to_list()
     fig, axes = plt.subplots(1, len(datasets), figsize=(6 * len(datasets), 5), sharey=True)
 
     if len(datasets) == 1:
         axes = [axes]
 
     for ax, ds in zip(axes, datasets):
-        sub = df[df["dataset"] == ds]
-        ax.hist(sub[sub["bucket"] == "active"][column], bins=bins, alpha=0.6,
-                color=COLOR_ACTIVE, label="Actives", density=True)
-        ax.hist(sub[sub["bucket"] == "inactive"][column], bins=bins, alpha=0.6,
-                color=COLOR_INACTIVE, label="Inactives", density=True)
+        sub = df.filter(pl.col("dataset") == ds)
+        ax.hist(sub.filter(pl.col("bucket") == "active").get_column(column).to_numpy(),
+                bins=bins, alpha=0.6, color=COLOR_ACTIVE, label="Actives", density=True)
+        ax.hist(sub.filter(pl.col("bucket") == "inactive").get_column(column).to_numpy(),
+                bins=bins, alpha=0.6, color=COLOR_INACTIVE, label="Inactives", density=True)
         ax.set_title(ds)
         ax.set_xlabel(xlabel)
         if ax is axes[0]:
@@ -274,31 +267,27 @@ def hist_overlay_grouped(df: pd.DataFrame, column: str, xlabel: str,
 
 def main():
     parser = argparse.ArgumentParser(description="Generate molecular descriptor visualizations")
-    parser.add_argument("--smiles-dir", type=Path, default=Path("smiles_out"),
+    parser.add_argument("--smiles-dir", type=Path, default=Path("smiles"),
                         help="Directory with *_actives.smi and *_inactives.smi")
     parser.add_argument("--outdir", type=Path, default=Path("."),
-                        help="Output directory for plots/CSV")
-    parser.add_argument("--skip-csv", action="store_true",
-                        help="Skip recomputing descriptors, read ligand_descriptors.csv instead")
-    parser.add_argument("--summary-csv", type=Path, default=Path("dataset_unique_summary_split.csv"),
-                        help="Path to dataset_unique_summary_split.csv for compliance plotting")
-    parser.add_argument("--batch-size", type=int, default=1000,
-                        help="Batch size for CSV writes (default: 1000)")
+                        help="Output directory for plots/Parquet")
+    parser.add_argument("--skip-descriptors", action="store_true",
+                        help="Skip recomputing descriptors, read ligand_descriptors.parquet instead")
+    parser.add_argument("--summary-parquet", type=Path,
+                        default=Path("dataset_unique_summary_split.parquet"),
+                        help="Path to dataset_unique_summary_split.parquet for compliance plotting")
     parser.add_argument("--max-workers", type=int, default=-1,
                         help="Max parallel workers (-1 = all CPUs)")
     args = parser.parse_args()
 
     args.outdir.mkdir(exist_ok=True)
-    out_csv = args.outdir / "ligand_descriptors.csv"
+    out_parquet = args.outdir / "ligand_descriptors.parquet"
 
-    if args.skip_csv:
-        print(f"[INFO] Reading existing {out_csv}")
-        df_pl = pl.read_csv(out_csv)
+    if args.skip_descriptors:
+        print(f"[INFO] Reading existing {out_parquet}")
+        df = pl.read_parquet(out_parquet)
     else:
-        df_pl = process_smiles_parallel(args.smiles_dir, out_csv, args.batch_size, args.max_workers)
-
-    # Convert to pandas for matplotlib/seaborn visualization
-    df = df_pl.to_pandas()
+        df = process_smiles_parallel(args.smiles_dir, out_parquet, args.max_workers)
 
     print("[INFO] Making violin plots (combined and for each dataset)...")
     violin_plot(df, "mw", "Molecular weight (Da)", "Molecular Weight Distribution",
@@ -309,7 +298,7 @@ def main():
                 args.outdir / "violin_rotbonds.png")
 
     print("[INFO] Making compliance bar charts...")
-    compliance_bar_from_summary(args.summary_csv, args.outdir)
+    compliance_bar_from_summary(args.summary_parquet, args.outdir)
 
     print("[INFO] Making extra visualisations...")
     scatter_plot_grouped(df, "mw", "tpsa", "Molecular weight (Da)", "TPSA (A^2)",

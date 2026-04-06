@@ -9,8 +9,8 @@ license = {text = "MIT"}
 dependencies = [
     # Core data processing
     "polars>=1.0",
-    "pandas>=2.0",  # Keep for matplotlib/seaborn compatibility
     "numpy>=1.24",
+    "marimo>=0.9",
 
     # Parallel processing & caching
     "joblib>=1.3",
@@ -32,6 +32,9 @@ dependencies = [
 muv = [
     "deepchem>=2.7",
 ]
+notebook = [
+    "pandas>=2.0",  # Required by seaborn heatmap in the Marimo notebook
+]
 test = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
@@ -46,7 +49,6 @@ dev = [
 
 [project.scripts]
 analyse-datasets = "analyse_datasets:main"
-analyse-muv = "analyse_muv:main"
 decoycomp-metrics = "metrics:main"
 
 [build-system]
@@ -54,7 +56,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["datasets", "analyser", "molecular_utils", "metrics", "analyse_datasets", "analyse_muv"]
+py-modules = ["datasets", "analyser", "molecular_utils", "metrics", "analyse_datasets", "dataset_comparison_executive_summary"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
