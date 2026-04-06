@@ -32,6 +32,8 @@ def main():
                         help="Directory for SMILES files (default: smiles)")
     parser.add_argument("--muv-data-dir", type=Path, default=None,
                         help="DeepChem data directory for MUV (default: ~/.deepchem/datasets)")
+    parser.add_argument("--max-ligands-per-dataset", type=int, default=None,
+                        help="Limit unique ligands collected per dataset")
     parser.add_argument("--write-smiles-only", action="store_true",
                         help="Only write SMILES files, skip analysis")
     parser.add_argument("--no-cache", action="store_true",
@@ -105,7 +107,7 @@ def main():
     print(f"[INFO] Descriptor cache built with {len(descriptor_cache):,} entries")
 
     # Initialise analyser
-    analyser = DatasetAnalyser(datasets, descriptor_cache)
+    analyser = DatasetAnalyser(datasets, descriptor_cache, max_ligands_per_dataset=args.max_ligands_per_dataset)
 
     if args.write_smiles_only:
         analyser.write_smiles_files(args.smiles_dir)

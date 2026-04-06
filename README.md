@@ -53,6 +53,9 @@ analyse-datasets --roots LIT-PCBA DUDE-Z DEKOIS2 D-COID --outdir results
 # Include MUV (requires DeepChem)
 analyse-datasets --roots LIT-PCBA DUDE-Z DEKOIS2 D-COID MUV --outdir results
 
+# Limit each dataset to 1000 unique ligands for a bounded test run
+analyse-datasets --roots LIT-PCBA DUDE-Z DEKOIS2 D-COID MUV --outdir results --max-ligands-per-dataset 1000
+
 # MUV only
 analyse-datasets --roots MUV --outdir results
 

@@ -98,10 +98,37 @@ class TargetStats:
 class DatasetAnalyser:
     """Main analysis engine for datasets."""
 
-    def __init__(self, datasets: list, cache: dict):
+    def __init__(self, datasets: list, cache: dict, max_ligands_per_dataset: int | None = None):
         self.datasets = datasets
         self.cache = cache
+        self.max_ligands_per_dataset = max_ligands_per_dataset
         self._smiles_cache = None
+
+    def _collect_dataset_smiles(self, dataset_obj) -> tuple[set[str], set[str], int]:
+        """Collect unique SMILES for one dataset, respecting the configured cap."""
+        actives = set()
+        inactives = set()
+        target_count = 0
+        limit = self.max_ligands_per_dataset
+
+        for _target_name, target_path in dataset_obj.enumerate_targets():
+            target_count += 1
+            for smi, label in dataset_obj.read_target(target_path):
+                if smi in actives or smi in inactives:
+                    continue
+
+                if limit is not None and len(actives) + len(inactives) >= limit:
+                    return actives, inactives, target_count
+
+                if label == "active":
+                    actives.add(smi)
+                else:
+                    inactives.add(smi)
+
+                if limit is not None and len(actives) + len(inactives) >= limit:
+                    return actives, inactives, target_count
+
+        return actives, inactives, target_count
 
     def collect_smiles(self) -> dict[str, dict[str, set[str]]]:
         """Collect all unique SMILES from all datasets."""
@@ -113,17 +140,12 @@ class DatasetAnalyser:
         dataset_to_smiles = defaultdict(lambda: {"active": set(), "inactive": set()})
 
         for dataset_obj in tqdm(self.datasets, desc="Scanning datasets"):
-            target_count = 0
-            for target_name, target_path in dataset_obj.enumerate_targets():
-                target_count += 1
-                for smi, label in dataset_obj.read_target(target_path):
-                    if label == "active":
-                        dataset_to_smiles[dataset_obj.name]["active"].add(smi)
-                    else:
-                        dataset_to_smiles[dataset_obj.name]["inactive"].add(smi)
+            actives, inactives, target_count = self._collect_dataset_smiles(dataset_obj)
+            dataset_to_smiles[dataset_obj.name]["active"] = actives
+            dataset_to_smiles[dataset_obj.name]["inactive"] = inactives
 
-            actives_count = len(dataset_to_smiles[dataset_obj.name]["active"])
-            inactives_count = len(dataset_to_smiles[dataset_obj.name]["inactive"])
+            actives_count = len(actives)
+            inactives_count = len(inactives)
             print(f"  {dataset_obj.name}: {target_count} targets, {actives_count:,} unique actives, {inactives_count:,} unique inactives")
 
         self._smiles_cache = dict(dataset_to_smiles)
@@ -134,15 +156,21 @@ class DatasetAnalyser:
         print("\n[INFO] Processing individual targets (from cache)...")
 
         rows = []
+        ds_smiles = self.collect_smiles()
         for dataset_obj in self.datasets:
-            for target_name, target_path in tqdm(
-                list(dataset_obj.enumerate_targets()),
-                desc=f"Processing {dataset_obj.name}"
-            ):
+            allowed = None
+            if self.max_ligands_per_dataset is not None:
+                buckets = ds_smiles[dataset_obj.name]
+                allowed = buckets["active"] | buckets["inactive"]
+
+            for target_name, target_path in tqdm(dataset_obj.enumerate_targets(), desc=f"Processing {dataset_obj.name}"):
                 stats = TargetStats(self.cache)
                 for smi, label in dataset_obj.read_target(target_path):
-                    stats.update(smi, label)
-                rows.append(stats.report(dataset_obj.name, target_name))
+                    if allowed is None or smi in allowed:
+                        stats.update(smi, label)
+                report = stats.report(dataset_obj.name, target_name)
+                if self.max_ligands_per_dataset is None or report["NumberLigandsTotal"] > 0:
+                    rows.append(report)
 
         print(f"[INFO] Completed processing {len(rows)} targets")
 
@@ -156,7 +184,7 @@ class DatasetAnalyser:
         ds_smiles = self.collect_smiles()
         rows = []
 
-        for dataset in tqdm(list(ds_smiles.keys()), desc="Processing datasets"):
+        for dataset in tqdm(ds_smiles.keys(), desc="Processing datasets"):
             buckets = ds_smiles[dataset]
             smiles = list(buckets["active"] | buckets["inactive"])
 
@@ -195,7 +223,7 @@ class DatasetAnalyser:
         ds_smiles = self.collect_smiles()
         rows = []
 
-        for dataset in tqdm(list(ds_smiles.keys()), desc="Processing datasets"):
+        for dataset in tqdm(ds_smiles.keys(), desc="Processing datasets"):
             buckets = ds_smiles[dataset]
             actives = list(buckets["active"])
             inactives = list(buckets["inactive"])

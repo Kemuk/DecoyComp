@@ -148,6 +148,26 @@ class TestDatasetAnalyser:
 
         assert len(result["TestDS"]["active"]) == 1
 
+    def test_collect_smiles_respects_max_ligands_per_dataset(self, mock_descriptor_cache):
+        """Should stop collecting after the configured dataset cap."""
+        target1 = []
+        for i in range(700):
+            target1.append(("C" * (i + 1), "active"))
+
+        target2 = []
+        for i in range(700):
+            target2.append(("N" * (i + 1), "inactive"))
+
+        dataset = MockDataset("TestDS", {
+            "target1": target1,
+            "target2": target2,
+        })
+        analyser = DatasetAnalyser([dataset], mock_descriptor_cache, max_ligands_per_dataset=1000)
+        result = analyser.collect_smiles()
+
+        total = len(result["TestDS"]["active"]) + len(result["TestDS"]["inactive"])
+        assert total == 1000
+
     def test_collect_smiles_caches_result(self, mock_dataset, mock_descriptor_cache):
         """Should cache SMILES collection result."""
         analyser = DatasetAnalyser([mock_dataset], mock_descriptor_cache)
