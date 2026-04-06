@@ -186,7 +186,7 @@ class DatasetAnalyser:
 
         for dataset in tqdm(ds_smiles.keys(), desc="Processing datasets"):
             buckets = ds_smiles[dataset]
-            smiles = list(buckets["active"] | buckets["inactive"])
+            smiles = buckets["active"] | buckets["inactive"]
 
             agg = aggregate_from_cache(smiles, self.cache)
             total = agg["NumberLigands"]
@@ -225,8 +225,8 @@ class DatasetAnalyser:
 
         for dataset in tqdm(ds_smiles.keys(), desc="Processing datasets"):
             buckets = ds_smiles[dataset]
-            actives = list(buckets["active"])
-            inactives = list(buckets["inactive"])
+            actives = buckets["active"]
+            inactives = buckets["inactive"]
 
             print(f"\n  Processing {dataset}:")
             print(f"    Actives: {len(actives):,} molecules")
@@ -235,15 +235,15 @@ class DatasetAnalyser:
             print(f"    Inactives: {len(inactives):,} molecules")
             rows.append(self._summarise_bucket(inactives, "Inactives", dataset, buckets["active"], buckets["inactive"]))
 
-            print(f"    All: {len(set(actives) | set(inactives)):,} unique molecules")
-            all_ligs = list(set(actives) | set(inactives))
+            print(f"    All: {len(actives | inactives):,} unique molecules")
+            all_ligs = actives | inactives
             rows.append(self._summarise_bucket(all_ligs, "All", dataset, buckets["active"], buckets["inactive"]))
 
         return pl.DataFrame(rows).sort(["Dataset", "Bucket"])
 
     def _summarise_bucket(
         self,
-        smiles: list[str],
+        smiles,
         bucket_label: str,
         dataset: str,
         actives: set[str],

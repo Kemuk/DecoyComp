@@ -167,6 +167,14 @@ class TestAggregateFromCache:
         assert result["NumberLigands"] == 0
         assert result["NumberInvalidSMILES"] == 0
 
+    def test_aggregate_accepts_iterable(self, mock_descriptor_cache):
+        """Aggregation should work with non-list iterables."""
+        smiles_iter = (smi for smi in ["CCO", "CCCO"])
+        result = aggregate_from_cache(smiles_iter, mock_descriptor_cache)
+
+        assert result["NumberLigands"] == 2
+        assert result["NumberInvalidSMILES"] == 0
+
 
 class TestMetalConstants:
     """Tests for the METALS constant."""

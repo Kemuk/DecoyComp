@@ -10,7 +10,6 @@ import argparse
 from pathlib import Path
 
 import polars as pl
-from tqdm.auto import tqdm
 
 from molecular_utils import DescriptorCalculator
 from datasets import LitPCBADataset, DudeZDataset, Dekois2Dataset, MUVDataset, DCOIDDataset
@@ -87,27 +86,28 @@ def main():
         print("[ERROR] No valid datasets found!")
         return
 
-    # Collect all unique SMILES
-    print("\n[STEP 1] Collecting all unique SMILES across datasets...")
+    # Collect capped unique SMILES via analyser so the same subset drives all outputs.
+    print("\n[STEP 1] Collecting unique SMILES across datasets...")
+    analyser = DatasetAnalyser(datasets, {}, max_ligands_per_dataset=args.max_ligands_per_dataset)
+    ds_smiles = analyser.collect_smiles()
     all_smiles = set()
-    for dataset_obj in tqdm(datasets, desc="Scanning datasets"):
-        for target_name, target_path in dataset_obj.enumerate_targets():
-            for smi, label in dataset_obj.read_target(target_path):
-                all_smiles.add(smi)
+    for buckets in ds_smiles.values():
+        all_smiles.update(buckets["active"])
+        all_smiles.update(buckets["inactive"])
 
     print(f"[INFO] Found {len(all_smiles):,} unique SMILES total")
 
     # Calculate all descriptors once (with optional caching)
     use_cache = not args.no_cache
     descriptor_cache = DescriptorCalculator.calculate_all_parallel(
-        list(all_smiles),
+        all_smiles,
         workers=args.workers,
         use_cache=use_cache
     )
     print(f"[INFO] Descriptor cache built with {len(descriptor_cache):,} entries")
 
-    # Initialise analyser
-    analyser = DatasetAnalyser(datasets, descriptor_cache, max_ligands_per_dataset=args.max_ligands_per_dataset)
+    # Reuse the same analyser and cached capped SMILES set for downstream processing.
+    analyser.cache = descriptor_cache
 
     if args.write_smiles_only:
         analyser.write_smiles_files(args.smiles_dir)
@@ -118,7 +118,7 @@ def main():
 
     print("\n[OUTPUT] Saving per-target summary...")
     output_file = args.outdir / "dataset_summary.parquet"
-    internal_cols = [c for c in df.columns if c.startswith("_")]
+    internal_cols = tuple(filter(lambda c: c.startswith("_"), df.columns))
     df.drop(internal_cols).write_parquet(output_file)
     print(f"  + Saved: {output_file} ({len(df)} targets)")
 
@@ -127,7 +127,7 @@ def main():
     if not lit_pcba_df.is_empty():
         print("\n[OUTPUT] Saving LIT-PCBA per-target summary...")
         output_file = args.outdir / "per_target_summary.parquet"
-        internal_cols = [c for c in lit_pcba_df.columns if c.startswith("_")]
+        internal_cols = tuple(filter(lambda c: c.startswith("_"), lit_pcba_df.columns))
         lit_pcba_df.drop(internal_cols).write_parquet(output_file)
         print(f"  + Saved: {output_file} ({len(lit_pcba_df)} targets)")
 

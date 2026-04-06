@@ -6,6 +6,7 @@ Uses Polars for all data manipulation; numpy arrays are passed directly
 to matplotlib — no pandas dependency.
 """
 import argparse
+from itertools import chain
 from pathlib import Path
 
 import polars as pl
@@ -38,7 +39,7 @@ def compute_desc(args: tuple[str, str, str]) -> dict | None:
 
 def read_smiles(smiles_dir: Path) -> list[tuple[str, str, str]]:
     """Read all SMILES files and return list of (smiles, dataset, bucket) tuples."""
-    files = list(smiles_dir.glob("*_actives.smi")) + list(smiles_dir.glob("*_inactives.smi"))
+    files = chain(smiles_dir.glob("*_actives.smi"), smiles_dir.glob("*_inactives.smi"))
 
     smiles_list = []
     print("[INFO] Reading SMILES files...")
@@ -193,11 +194,13 @@ def compliance_bar_from_summary(summary_parquet: Path, outdir: Path):
 
         for j, bucket in enumerate(buckets):
             sub = comp.filter((pl.col("rule") == rule) & (pl.col("Bucket") == bucket))
-            rates = [
-                sub.filter(pl.col("Dataset") == ds).get_column("rate").to_list()[0]
-                if sub.filter(pl.col("Dataset") == ds).height > 0 else 0.0
-                for ds in datasets
-            ]
+            rates = (
+                pl.DataFrame({"Dataset": datasets})
+                .join(sub.select(["Dataset", "rate"]), on="Dataset", how="left")
+                .with_columns(pl.col("rate").fill_null(0.0))
+                .get_column("rate")
+                .to_list()
+            )
             color = COLOR_ACTIVE if bucket == "Actives" else COLOR_INACTIVE
             ax.bar(x + j * width, rates, width=width, label=bucket, color=color)
 

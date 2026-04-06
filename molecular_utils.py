@@ -5,6 +5,7 @@ Molecular utilities for descriptor calculation and aggregation.
 Uses joblib for persistent caching and parallel processing.
 """
 from collections import namedtuple
+from collections.abc import Iterable
 from typing import Callable
 
 from joblib import Parallel, delayed
@@ -84,7 +85,7 @@ class DescriptorCalculator:
     @classmethod
     def calculate_all_parallel(
         cls,
-        smiles_list: list[str],
+        smiles_list,
         workers: int = -1,
         use_cache: bool = True,
         show_progress: bool = True
@@ -101,7 +102,8 @@ class DescriptorCalculator:
         Returns:
             Dictionary mapping SMILES to (has_salts, MolDescriptors or None)
         """
-        n_smiles = len(smiles_list)
+        smiles_iter = smiles_list if isinstance(smiles_list, (list, tuple, set)) else tuple(smiles_list)
+        n_smiles = len(smiles_iter)
         print(f"[INFO] Calculating descriptors for {n_smiles:,} unique SMILES with {workers} workers...")
 
         # Get the cached version of the calculation function
@@ -115,13 +117,13 @@ class DescriptorCalculator:
         # Process in parallel with joblib
         if show_progress:
             results = Parallel(n_jobs=workers, backend="loky", return_as="generator")(
-                delayed(calc_func)(smi) for smi in smiles_list
+                delayed(calc_func)(smi) for smi in smiles_iter
             )
             # Wrap with tqdm for progress
-            results = list(tqdm(results, total=n_smiles, desc="Computing descriptors"))
+            results = tqdm(results, total=n_smiles, desc="Computing descriptors")
         else:
             results = Parallel(n_jobs=workers, backend="loky")(
-                delayed(calc_func)(smi) for smi in smiles_list
+                delayed(calc_func)(smi) for smi in smiles_iter
             )
 
         # Build cache dictionary
@@ -143,12 +145,12 @@ class DescriptorCalculator:
         return cache
 
 
-def aggregate_from_cache(smiles_list: list[str], cache: dict) -> dict:
+def aggregate_from_cache(smiles_list: Iterable[str], cache: dict) -> dict:
     """
     Aggregate statistics from cached descriptors.
 
     Args:
-        smiles_list: List of SMILES to aggregate
+        smiles_list: Iterable of SMILES to aggregate
         cache: Dictionary mapping SMILES to (has_salts, MolDescriptors)
 
     Returns:
