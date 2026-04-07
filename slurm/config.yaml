@@ -1,0 +1,29 @@
+devel:
+  partition: devel
+  time: 10
+  chunks: 5
+  cpus: 4
+  mem_per_cpu: 4
+  max_ligands: 1000
+  results_dir: results_devel
+  merge:
+    indir: results_devel
+    outdir: merged_results_devel
+    time: 10
+    cpus: 4
+    mem_per_cpu: 4
+
+prod:
+  partition: short
+  time: 240
+  chunks: 4
+  cpus: 4
+  mem_per_cpu: 4
+  max_ligands: null
+  results_dir: results
+  merge:
+    indir: results
+    outdir: merged_results
+    time: 30
+    cpus: 8
+    mem_per_cpu: 4
