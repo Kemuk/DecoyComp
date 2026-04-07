@@ -16,6 +16,9 @@ set -e
 # Go to repo root
 cd "$(dirname "$0")/.."
 
+# Create logs directory
+mkdir -p logs
+
 # Configuration (from environment or defaults)
 CHUNK_ID=$SLURM_ARRAY_TASK_ID
 TOTAL_CHUNKS=$SLURM_ARRAY_TASK_COUNT
@@ -23,8 +26,6 @@ OUTDIR="${OUTDIR:-results}"
 WORKERS="${WORKERS:--1}"
 DATASETS=("LIT-PCBA" "DEKOIS2" "DUDE-Z")
 MAX_LIGANDS="${MAX_LIGANDS:-}"
-
-mkdir -p logs "$OUTDIR"
 
 echo "=========================================="
 echo "SLURM Array Job Worker"
@@ -35,6 +36,8 @@ echo "CPUs Available: $SLURM_CPUS_PER_TASK"
 echo "Allocated Memory: $SLURM_MEM_PER_NODE MB"
 echo "Start Time: $(date)"
 echo "=========================================="
+
+mkdir -p "$OUTDIR"
 
 # Activate environment
 if [ -d .venv ]; then
