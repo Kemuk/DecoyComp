@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=decoy-merge
-#SBATCH --output=$SLURM_SUBMIT_DIR/logs/merge_%j.out
-#SBATCH --error=$SLURM_SUBMIT_DIR/logs/merge_%j.err
+#SBATCH --output=logs/merge_%j.out
+#SBATCH --error=logs/merge_%j.err
 
 # SLURM merge job - combines per-chunk results
 # Submitted by submit_slurm.py with dependency on worker array job
