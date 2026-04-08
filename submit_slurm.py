@@ -25,7 +25,6 @@ def load_config():
 def submit_worker(mode, config):
     """Submit worker array job."""
     mode_config = config[mode]
-    log_dir = Path(__file__).parent / "logs"
 
     # Build sbatch command
     cmd = [
@@ -35,8 +34,6 @@ def submit_worker(mode, config):
         f"--array=1-{mode_config['chunks']}",
         f"--cpus-per-task={mode_config['cpus']}",
         f"--mem-per-cpu={mode_config['mem_per_cpu']}G",
-        f"--output={log_dir}/chunk_%a.out",
-        f"--error={log_dir}/chunk_%a.err",
     ]
 
     # Build environment variables
@@ -71,7 +68,6 @@ def submit_merge(job_id, mode, config):
     """Submit merge job with dependency on worker job."""
     mode_config = config[mode]
     merge_config = mode_config['merge']
-    log_dir = Path(__file__).parent / "logs"
 
     # Build sbatch command
     cmd = [
@@ -81,8 +77,6 @@ def submit_merge(job_id, mode, config):
         f"--cpus-per-task={merge_config['cpus']}",
         f"--mem-per-cpu={merge_config['mem_per_cpu']}G",
         f"--dependency=afterok:{job_id}",
-        f"--output={log_dir}/merge_%j.out",
-        f"--error={log_dir}/merge_%j.err",
     ]
 
     # Build environment variables
@@ -129,9 +123,6 @@ def main():
     parser.add_argument("--mode", choices=["devel", "prod"], help="Submission mode")
     parser.add_argument("--merge", action="store_true", help="Run merge.py directly")
     args = parser.parse_args()
-
-    # Create logs directory before submitting jobs (SBATCH output paths evaluated at submission time)
-    (Path(__file__).parent / "logs").mkdir(exist_ok=True)
 
     config = load_config()
 

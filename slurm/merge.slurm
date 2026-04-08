@@ -1,5 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=decoy-merge
+#SBATCH --output=$SLURM_SUBMIT_DIR/logs/merge_%j.out
+#SBATCH --error=$SLURM_SUBMIT_DIR/logs/merge_%j.err
 
 # SLURM merge job - combines per-chunk results
 # Submitted by submit_slurm.py with dependency on worker array job
@@ -8,12 +10,11 @@
 set -euo pipefail
 export PYTHONUNBUFFERED=1
 
-# Go to repo root
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
-REPO_ROOT="$(pwd)"
+# Go to repo root (submission directory)
+REPO_ROOT="$SLURM_SUBMIT_DIR"
 
 # Create logs directory
-mkdir -p "${REPO_ROOT}/logs"
+mkdir -p "$SLURM_SUBMIT_DIR/logs"
 
 # Validate required environment variables
 if [[ -z "${INDIR:-}" ]]; then

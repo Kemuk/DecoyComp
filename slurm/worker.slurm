@@ -5,6 +5,8 @@
 #SBATCH --time=30                      # Time in minutes
 #SBATCH --cpus-per-task=4              # CPUs per chunk
 #SBATCH --mem-per-cpu=4G               # Memory per CPU
+#SBATCH --output=$SLURM_SUBMIT_DIR/logs/chunk_%a.out
+#SBATCH --error=$SLURM_SUBMIT_DIR/logs/chunk_%a.err
 
 # SLURM array job worker - processes one chunk
 # Submitted by submit_slurm.py with environment variables
@@ -12,12 +14,11 @@
 set -euo pipefail
 export PYTHONUNBUFFERED=1
 
-# Go to repo root
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
-REPO_ROOT="$(pwd)"
+# Go to repo root (submission directory)
+REPO_ROOT="$SLURM_SUBMIT_DIR"
 
 # Create logs directory
-mkdir -p "${REPO_ROOT}/logs"
+mkdir -p "$SLURM_SUBMIT_DIR/logs"
 
 # Validate required environment variables
 if [[ -z "${OUTDIR:-}" ]]; then
