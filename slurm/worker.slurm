@@ -5,8 +5,6 @@
 #SBATCH --time=30                      # Time in minutes
 #SBATCH --cpus-per-task=4              # CPUs per chunk
 #SBATCH --mem-per-cpu=4G               # Memory per CPU
-#SBATCH --output=logs/chunk_%a.out
-#SBATCH --error=logs/chunk_%a.err
 
 # SLURM array job worker - processes one chunk
 # Submitted by submit_slurm.py with environment variables
