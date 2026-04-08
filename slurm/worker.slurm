@@ -9,39 +9,70 @@
 #SBATCH --error=logs/chunk_%a.err
 
 # SLURM array job worker - processes one chunk
-# Submit from repo root: sbatch slurm/worker.slurm
+# Submitted by submit_slurm.py with environment variables
 
-set -e
+set -euo pipefail
+export PYTHONUNBUFFERED=1
 
 # Go to repo root
-cd "$(dirname "$0")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+REPO_ROOT="$(pwd)"
 
 # Create logs directory
-mkdir -p logs
+mkdir -p "${REPO_ROOT}/logs"
+
+# Validate required environment variables
+if [[ -z "${OUTDIR:-}" ]]; then
+    echo "ERROR: OUTDIR environment variable not set by submit_slurm.py"
+    exit 1
+fi
 
 # Configuration (from environment or defaults)
-CHUNK_ID=$SLURM_ARRAY_TASK_ID
-TOTAL_CHUNKS=$SLURM_ARRAY_TASK_COUNT
-OUTDIR="${OUTDIR:-results}"
+CHUNK_ID=${SLURM_ARRAY_TASK_ID}
+TOTAL_CHUNKS=${SLURM_ARRAY_TASK_COUNT}
 WORKERS="${WORKERS:--1}"
 DATASETS=("LIT-PCBA" "DEKOIS2" "DUDE-Z")
 MAX_LIGANDS="${MAX_LIGANDS:-}"
 
+# Resolve paths
+OUTDIR="${REPO_ROOT}/${OUTDIR}"
+CONFIG_FILE="${REPO_ROOT}/slurm/config.yaml"
+
+# Validate config exists
+if [[ ! -f "${CONFIG_FILE}" ]]; then
+    echo "ERROR: Config file not found: ${CONFIG_FILE}"
+    echo "Run setup first to create config"
+    exit 1
+fi
+
+# Validate analyze script exists
+ANALYZE_SCRIPT="${REPO_ROOT}/analyse_datasets.py"
+if [[ ! -f "${ANALYZE_SCRIPT}" ]]; then
+    echo "ERROR: Analysis script not found: ${ANALYZE_SCRIPT}"
+    exit 1
+fi
+
 echo "=========================================="
 echo "SLURM Array Job Worker"
 echo "=========================================="
-echo "Chunk: $CHUNK_ID / $TOTAL_CHUNKS"
-echo "Node: $(hostname)"
-echo "CPUs Available: $SLURM_CPUS_PER_TASK"
-echo "Allocated Memory: $SLURM_MEM_PER_NODE MB"
-echo "Start Time: $(date)"
+echo "Chunk ID:     ${CHUNK_ID} / ${TOTAL_CHUNKS}"
+echo "Task:         ${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+echo "Node:         $(hostname)"
+echo "CPUs:         ${SLURM_CPUS_PER_TASK}"
+echo "Memory Avail: ${SLURM_MEM_PER_NODE} MB"
+echo "Repo Root:    ${REPO_ROOT}"
+echo "Output Dir:   ${OUTDIR}"
+echo "Config File:  ${CONFIG_FILE}"
+echo "Start Time:   $(date)"
 echo "=========================================="
 
-mkdir -p "$OUTDIR"
+# Create output directory
+mkdir -p "${OUTDIR}"
 
 # Activate environment
-if [ -d .venv ]; then
-    source .venv/bin/activate
+if [[ -d "${REPO_ROOT}/.venv" ]]; then
+    source "${REPO_ROOT}/.venv/bin/activate"
+    echo "Activated venv"
 fi
 
 # Run analysis
@@ -51,12 +82,23 @@ ANALYSIS_ARGS=(
     "--workers" "$WORKERS"
 )
 
-if [ -n "$MAX_LIGANDS" ]; then
-    ANALYSIS_ARGS+=("--max-ligands-per-dataset" "$MAX_LIGANDS")
+if [[ -n "${MAX_LIGANDS}" ]]; then
+    ANALYSIS_ARGS+=("--max-ligands-per-dataset" "${MAX_LIGANDS}")
 fi
 
-python3 analyse_datasets.py "${ANALYSIS_ARGS[@]}"
+echo ""
+echo "Running: python3 ${ANALYZE_SCRIPT} ${ANALYSIS_ARGS[*]}"
+echo ""
 
+python3 "${ANALYZE_SCRIPT}" "${ANALYSIS_ARGS[@]}"
+
+EXIT_CODE=$?
+if [[ ${EXIT_CODE} -ne 0 ]]; then
+    echo "ERROR: Analysis failed with exit code ${EXIT_CODE}"
+    exit ${EXIT_CODE}
+fi
+
+echo ""
 echo "=========================================="
-echo "Chunk $CHUNK_ID completed at $(date)"
+echo "Chunk $CHUNK_ID completed successfully at $(date)"
 echo "=========================================="
