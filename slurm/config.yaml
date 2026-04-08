@@ -4,7 +4,8 @@ devel:
   chunks: 5
   cpus: 4
   mem_per_cpu: 4
-  max_ligands: 1000
+  max_ligands_per_dataset: 1000
+  datasets: ["LIT-PCBA", "DEKOIS2", "DUDE-Z"]
   results_dir: results_devel
   merge:
     indir: results_devel
@@ -16,10 +17,11 @@ devel:
 prod:
   partition: short
   time: 240
-  chunks: 4
+  chunks: 200
   cpus: 4
   mem_per_cpu: 4
-  max_ligands: null
+  max_ligands_per_dataset: null
+  datasets: ["LIT-PCBA", "DEKOIS2", "DUDE-Z"]
   results_dir: results
   merge:
     indir: results

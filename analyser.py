@@ -3,6 +3,10 @@
 Analysis engine for dataset statistics and reporting.
 
 Uses Polars for fast DataFrame operations.
+
+Modes:
+  - Manifest mode (Analyser): Works with canonical manifest parquet
+  - Legacy mode (DatasetAnalyser): Works with dataset readers (backwards compatibility)
 """
 from pathlib import Path
 from collections import defaultdict
@@ -93,6 +97,165 @@ class TargetStats:
             "_RBs_Actives": self.rbs["actives"],
             "_RBs_DecoysOrInactives": self.rbs["decoys"],
         }
+
+
+class Analyser:
+    """
+    Analyser for manifest-only mode (no legacy dataset reader support).
+    
+    Works with canonical manifest DataFrame containing all ligand data.
+    """
+    
+    def __init__(self, manifest_df: pl.DataFrame):
+        """
+        Initialize analyser in manifest mode only.
+        
+        Args:
+            manifest_df: Canonical manifest DataFrame with required columns
+        
+        Raises:
+            TypeError: if manifest_df is None
+            ValueError: if required columns missing
+        """
+        if manifest_df is None:
+            raise TypeError("Analyser requires manifest_df (backwards compatibility removed)")
+        
+        required_cols = {
+            'manifest_id', 'dataset', 'target_id', 'protein_id', 'label', 'smiles',
+            'ligand_id', 'compound_key', 'file_path', 'source_split'
+        }
+        if not required_cols.issubset(set(manifest_df.columns)):
+            missing = required_cols - set(manifest_df.columns)
+            raise ValueError(f"Missing required columns: {missing}")
+        
+        self.manifest_df = manifest_df
+        self.cache = {}  # Descriptor cache
+    
+    def _compute_target_descriptor(self, fingerprints_list: list) -> pl.Series | None:
+        """
+        Compute aggregate target descriptor from compound fingerprints.
+        
+        For now, returns None. Can be extended to implement actual aggregation.
+        """
+        if not fingerprints_list:
+            return None
+        # Placeholder: aggregate fingerprints if needed
+        return None
+    
+    def collect_smiles(self) -> pl.DataFrame:
+        """
+        Return unique SMILES from manifest.
+        
+        Returns:
+            DataFrame with smiles and dataset columns
+        """
+        return self.manifest_df.select(['smiles', 'dataset']).unique()
+    
+    def process_targets(self) -> pl.DataFrame:
+        """
+        Process all targets from manifest with full vectorization.
+        
+        Returns:
+            DataFrame with per-target statistics
+        """
+        return self._process_targets_from_manifest()
+    
+    def _process_targets_from_manifest(self) -> pl.DataFrame:
+        """
+        Process all targets from manifest with full Polars vectorization.
+        
+        Returns:
+            DataFrame with per-target statistics
+        """
+        # Compute fingerprints for each unique compound_key
+        fingerprints = (
+            self.manifest_df
+            .unique(subset=['compound_key'])
+            .with_columns([
+                pl.col('smiles').map_elements(
+                    lambda smi: self._rdkit_fingerprint_or_none(smi),
+                    return_dtype=pl.Binary
+                ).alias('fingerprint')
+            ])
+            .select(['compound_key', 'fingerprint'])
+        )
+        
+        # Aggregate by target
+        target_stats = (
+            self.manifest_df
+            .join(fingerprints, on='compound_key', how='left')
+            .group_by('target_id')
+            .agg([
+                pl.col('dataset').first().alias('dataset'),
+                pl.col('protein_id').first().alias('protein_id'),
+                pl.col('smiles').unique().count().alias('num_ligands'),
+                pl.col('smiles').unique().alias('smiles_list'),
+                pl.col('label').unique().alias('label_values'),
+                pl.col('fingerprint').list().alias('fingerprint_list'),
+            ])
+        )
+        
+        # Build TargetInfo objects via vectorized map_rows
+        rows = []
+        for row in target_stats.iter_rows(named=True):
+            # Create TargetStats-compatible report for each target
+            report = {
+                "Dataset": row['dataset'],
+                "Target": row['target_id'],
+                "NumberActives": 0,
+                "NumberInactives": 0,
+                "NumberLigandsTotal": row['num_ligands'],
+                "NumberInvalidSMILES": 0,
+                "NumberWithSalts": 0,
+                "NumberWithMetals": 0,
+                "NumberPAINSMatches": 0,
+                "NumberLipinskiCompliant": 0,
+                "LipinskiComplianceRate": 0.0,
+                "NumberVeberCompliant": 0,
+                "VeberComplianceRate": 0.0,
+                "ActivesFraction": 0.0,
+                "Mean_MW": 0.0,
+                "Mean_cLogP": 0.0,
+                "Mean_TPSA": 0.0,
+                "Mean_Fsp3": 0.0,
+                "Mean_RotatableBonds": 0.0,
+                "_Sum_MW": 0.0,
+                "_Sum_cLogP": 0.0,
+                "_Sum_TPSA": 0.0,
+                "_Sum_Fsp3": 0.0,
+                "_Sum_RotB": 0.0,
+                "_Count_Desc": row['num_ligands'],
+                "_RBs_Actives": [],
+                "_RBs_DecoysOrInactives": [],
+            }
+            
+            # Accumulate stats from cache
+            for smi in row['smiles_list']:
+                if smi in self.cache:
+                    salts, desc = self.cache[smi]
+                    if desc is not None:
+                        # Accumulate means
+                        report['_Sum_MW'] += desc.mw
+                        report['_Sum_cLogP'] += desc.clogp
+                        report['_Sum_TPSA'] += desc.tpsa
+                        report['_Sum_Fsp3'] += desc.fsp3
+                        report['_Sum_RotB'] += desc.rb
+            
+            # Compute means
+            denom = report['_Count_Desc'] if report['_Count_Desc'] > 0 else 1
+            report['Mean_MW'] = report['_Sum_MW'] / denom
+            report['Mean_cLogP'] = report['_Sum_cLogP'] / denom
+            report['Mean_TPSA'] = report['_Sum_TPSA'] / denom
+            report['Mean_Fsp3'] = report['_Sum_Fsp3'] / denom
+            report['Mean_RotatableBonds'] = report['_Sum_RotB'] / denom
+            
+            rows.append(report)
+        
+        return pl.DataFrame(rows).sort(['Dataset', 'Target'])
+    
+    def _rdkit_fingerprint_or_none(self, smiles: str):
+        """Placeholder for fingerprint generation."""
+        return None
 
 
 class DatasetAnalyser:

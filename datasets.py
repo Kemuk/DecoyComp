@@ -16,6 +16,83 @@ from Bio.PDB import PDBParser
 from rdkit import Chem
 
 
+# Canonical manifest schema for all ligand data
+MANIFEST_SCHEMA = {
+    'manifest_id': pl.UInt32,
+    'dataset': pl.Utf8,
+    'target_id': pl.Utf8,
+    'protein_id': pl.Utf8,
+    'label': pl.Utf8,
+    'smiles': pl.Utf8,
+    'ligand_id': pl.Utf8,
+    'compound_key': pl.Utf8,
+    'file_path': pl.Utf8,
+    'source_split': pl.Utf8,
+}
+
+
+def empty_manifest_frame() -> pl.DataFrame:
+    """Create empty DataFrame with manifest schema."""
+    return pl.DataFrame(schema=MANIFEST_SCHEMA)
+
+
+def dataset_to_manifest_frame(
+    dataset_obj,
+    max_ligands_per_dataset: int | None = None
+) -> pl.DataFrame:
+    """
+    Convert dataset metadata to canonical manifest frame.
+    
+    Args:
+        dataset_obj: Instance of BaseDataset with _metadata attribute
+        max_ligands_per_dataset: Optional per-dataset ligand cap
+    
+    Returns:
+        DataFrame with columns: dataset, target_id, protein_id, label, smiles,
+                               ligand_id, file_path, source_split
+    
+    Raises:
+        TypeError: if dataset does not expose _metadata
+        ValueError: if metadata missing required columns
+    """
+    if not hasattr(dataset_obj, '_metadata'):
+        raise TypeError(f"Dataset {dataset_obj.name} does not expose _metadata attribute (BaseDataset required)")
+    
+    if dataset_obj._metadata is None or dataset_obj._metadata.is_empty():
+        raise ValueError(f"Dataset {dataset_obj.name} has no metadata")
+    
+    required = {'target_id', 'smiles', 'label'}
+    if not required.issubset(set(dataset_obj._metadata.columns)):
+        missing = required - set(dataset_obj._metadata.columns)
+        raise ValueError(f"Metadata missing required columns: {missing}")
+    
+    df = dataset_obj._metadata.clone()
+    
+    # Apply per-dataset cap if configured
+    if max_ligands_per_dataset is not None:
+        unique_smiles = df.get_column('smiles').unique().len()
+        if unique_smiles > max_ligands_per_dataset:
+            df = df.filter(
+                pl.col('smiles').is_in(
+                    df.select('smiles').unique().head(max_ligands_per_dataset)
+                )
+            )
+    
+    # Normalize to manifest columns
+    result = df.select([
+        pl.lit(dataset_obj.name).alias('dataset'),
+        pl.col('target_id'),
+        pl.col('target_id').alias('protein_id'),  # Use target_id as protein_id
+        pl.col('label'),
+        pl.col('smiles'),
+        pl.col('smiles').alias('ligand_id'),  # Use SMILES as ligand_id for now
+        pl.lit('').alias('file_path'),  # Placeholder
+        pl.lit('train').alias('source_split'),  # Default split
+    ])
+    
+    return result
+
+
 def read_smi_file(filepath: Path, label: str) -> Iterator[tuple[str, str]]:
     """Helper function to read SMILES files."""
     if not filepath.is_file():

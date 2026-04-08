@@ -131,6 +131,44 @@ pytest tests/
 
 ---
 
+## Canonical Manifest Schema
+
+The pipeline uses a **single canonical manifest parquet** as the source of truth for all ligand data when operating in manifest mode (multi-chunk SLURM jobs). This ensures every chunk processes from the same ligand universe with deterministic chunk assignment.
+
+### Manifest Columns
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `manifest_id` | int | 1-indexed row number; used for chunk assignment |
+| `dataset` | str | Dataset name (e.g., 'kinase', 'protease') |
+| `target_id` | str | Target identifier within dataset |
+| `protein_id` | str | Protein/target structure ID |
+| `label` | int | 0 = inactive, 1 = active |
+| `smiles` | str | Canonical SMILES (RDKit canonicalized) |
+| `ligand_id` | str | Normalized ligand identifier (source ID or canonical SMILES) |
+| `compound_key` | str | Unique compound identifier: `dataset\|protein_id\|ligand_id` |
+| `file_path` | str | Path to source SDF/ligand file |
+| `source_split` | str | 'train' or 'test' split indicator |
+
+### Compound Key Constraint
+
+Each `compound_key` appears exactly once in the manifest. This prevents duplicate ligands across datasets/proteins.
+
+### Chunk Assignment Rule
+
+For a manifest with N rows and C total chunks, chunk i processes rows r where:
+```
+(r - 1) % C == (i - 1)
+```
+
+This ensures:
+- Every row assigned to exactly one chunk
+- Deterministic, reproducible chunk boundaries
+- No overlap or gaps
+- Easy to parallelize without coordination
+
+---
+
 ## Caching
 
 Molecular descriptor calculations are cached with [joblib](https://joblib.readthedocs.io/)

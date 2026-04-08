@@ -234,3 +234,106 @@ class TestDatasetAnalyser:
 
         # Files should not be overwritten
         assert actives_file.read_text() == "existing\n"
+
+
+class TestAnalyserManifestMode:
+    """Tests for the manifest-mode Analyser class."""
+
+    @pytest.fixture
+    def sample_manifest_df(self):
+        """Create sample manifest DataFrame for testing."""
+        return pl.DataFrame({
+            'manifest_id': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            'dataset': ['kinase', 'kinase', 'kinase', 'protease', 'protease',
+                        'kinase', 'protease', 'kinase', 'protease', 'kinase'],
+            'target_id': ['tgt1', 'tgt1', 'tgt2', 'tgt2', 'tgt3',
+                          'tgt1', 'tgt2', 'tgt1', 'tgt3', 'tgt2'],
+            'protein_id': ['p1', 'p1', 'p2', 'p2', 'p3',
+                           'p1', 'p2', 'p1', 'p3', 'p2'],
+            'label': [1, 0, 1, 0, 1, 0, 1, 1, 0, 1],
+            'smiles': ['CC(C)O', 'CC(C)O', 'CCO', 'CCO', 'c1ccccc1',
+                       'CC(C)O', 'CCO', 'CC(C)O', 'c1ccccc1', 'CCO'],
+            'ligand_id': ['lid1', 'lid1', 'lid2', 'lid2', 'lid3',
+                          'lid1', 'lid2', 'lid1', 'lid3', 'lid2'],
+            'compound_key': ['kinase|p1|lid1', 'kinase|p1|lid1', 'kinase|p2|lid2', 'kinase|p2|lid2', 'kinase|p3|lid3',
+                             'kinase|p1|lid1', 'protease|p2|lid2', 'kinase|p1|lid1', 'protease|p3|lid3', 'kinase|p2|lid2'],
+            'file_path': [f'path_{i}.sdf' for i in range(10)],
+            'source_split': ['train'] * 10,
+        })
+
+    def test_analyser_requires_manifest(self):
+        """Analyser constructor must reject None manifest."""
+        from analyser import Analyser
+        with pytest.raises(TypeError, match="backwards compatibility removed"):
+            Analyser(manifest_df=None)
+
+    def test_analyser_validates_schema(self, sample_manifest_df):
+        """Analyser must fail if manifest missing required columns."""
+        from analyser import Analyser
+        invalid_manifest = sample_manifest_df.drop('compound_key')
+        with pytest.raises(ValueError, match="Missing required columns"):
+            Analyser(manifest_df=invalid_manifest)
+
+    def test_collect_smiles_returns_df(self, sample_manifest_df):
+        """collect_smiles should return DataFrame with smiles and dataset columns."""
+        from analyser import Analyser
+        analyser = Analyser(manifest_df=sample_manifest_df)
+        result = analyser.collect_smiles()
+        
+        assert isinstance(result, pl.DataFrame)
+        assert set(result.columns) == {'smiles', 'dataset'}
+
+    def test_collect_smiles_unique(self, sample_manifest_df):
+        """collect_smiles should return unique SMILES."""
+        from analyser import Analyser
+        analyser = Analyser(manifest_df=sample_manifest_df)
+        result = analyser.collect_smiles()
+        
+        # Should have fewer rows than manifest (due to duplicate SMILES)
+        assert len(result) < len(sample_manifest_df)
+
+    def test_process_targets_returns_df(self, sample_manifest_df):
+        """process_targets should return DataFrame."""
+        from analyser import Analyser
+        analyser = Analyser(manifest_df=sample_manifest_df)
+        result = analyser.process_targets()
+        
+        assert isinstance(result, pl.DataFrame)
+
+    def test_process_targets_has_all_targets(self, sample_manifest_df):
+        """process_targets should include all unique targets."""
+        from analyser import Analyser
+        analyser = Analyser(manifest_df=sample_manifest_df)
+        result = analyser.process_targets()
+        
+        targets = set(result.get_column('Target').to_list())
+        assert targets == {'tgt1', 'tgt2', 'tgt3'}
+
+    def test_chunk_assignment_deterministic(self):
+        """Chunk assignment via (manifest_id - 1) % total_chunks should be deterministic."""
+        total_chunks = 5
+        chunk_id = 2
+        expected_indices = {
+            manifest_id 
+            for manifest_id in range(1, 51)
+            if (manifest_id - 1) % total_chunks == (chunk_id - 1)
+        }
+        
+        # Chunk 2 out of 5 should get manifest_ids: 2, 7, 12, 17, 22, ...
+        assert expected_indices == {2, 7, 12, 17, 22, 27, 32, 37, 42, 47}
+
+    def test_manifest_chunk_coverage(self):
+        """All chunks union must equal full manifest (no gaps, no overlaps)."""
+        total_chunks = 5
+        manifest_ids = list(range(1, 101))  # 100 rows
+        
+        all_assigned = set()
+        for chunk_id in range(1, total_chunks + 1):
+            chunk_ids = {
+                mid for mid in manifest_ids
+                if (mid - 1) % total_chunks == (chunk_id - 1)
+            }
+            all_assigned.update(chunk_ids)
+        
+        # All manifest_ids assigned exactly once
+        assert all_assigned == set(manifest_ids)

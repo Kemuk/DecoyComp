@@ -11,20 +11,19 @@ from typing import List
 import polars as pl
 
 
-def find_chunk_dirs(indir: Path) -> List[Path]:
-    """Find all chunk_N directories."""
-    chunk_dirs = sorted(
-        indir.glob("chunk_*"),
-        key=lambda p: int(p.name.split("_")[1]) if "_" in p.name else 0
+def find_chunk_files(indir: Path) -> List[Path]:
+    """Find all chunk_*.parquet files."""
+    chunk_files = sorted(
+        indir.glob("chunk_*.parquet"),
+        key=lambda p: int(p.stem.split("_")[1]) if "_" in p.stem else 0
     )
-    return [d for d in chunk_dirs if d.is_dir()]
+    return chunk_files
 
 
-def merge_parquet_files(chunk_dirs: List[Path], filename: str) -> pl.DataFrame:
-    """Merge a parquet file across all chunks."""
+def merge_chunk_parquets(chunk_files: List[Path]) -> pl.DataFrame:
+    """Merge chunk parquet files."""
     dfs = []
-    for chunk_dir in chunk_dirs:
-        filepath = chunk_dir / filename
+    for filepath in chunk_files:
         if filepath.exists():
             print(f"  + Found: {filepath}")
             dfs.append(pl.read_parquet(filepath))
@@ -32,9 +31,12 @@ def merge_parquet_files(chunk_dirs: List[Path], filename: str) -> pl.DataFrame:
             print(f"  - Missing: {filepath}")
 
     if not dfs:
-        raise FileNotFoundError(f"No {filename} files found in any chunks")
+        raise FileNotFoundError(f"No chunk_*.parquet files found")
 
-    return pl.concat(dfs)
+    print(f"[MERGE] Concatenating {len(dfs)} chunk files...")
+    merged = pl.concat(dfs)
+    print(f"[MERGE] Total rows: {len(merged)}")
+    return merged
 
 
 def main():
@@ -62,40 +64,28 @@ def main():
         print(f"[ERROR] Input directory not found: {indir}")
         return
 
-    # Find chunks
-    chunk_dirs = find_chunk_dirs(indir)
-    if not chunk_dirs:
-        print(f"[ERROR] No chunk_* directories found in {indir}")
+    # Find chunk files
+    chunk_files = find_chunk_files(indir)
+    if not chunk_files:
+        print(f"[ERROR] No chunk_*.parquet files found in {indir}")
         return
 
-    print(f"[INFO] Found {len(chunk_dirs)} chunks to merge")
-    for d in chunk_dirs:
-        print(f"  + {d.name}")
+    print(f"[INFO] Found {len(chunk_files)} chunk files to merge")
+    for f in chunk_files:
+        print(f"  + {f.name}")
 
     outdir.mkdir(parents=True, exist_ok=True)
 
-    # Merge each file type
-    files_to_merge = [
-        "dataset_summary.parquet",
-        "per_target_summary.parquet",
-        "dataset_unique_summary.parquet",
-        "dataset_unique_summary_split.parquet",
-    ]
-
-    for filename in files_to_merge:
-        try:
-            print(f"\n[MERGE] Merging {filename}...")
-            merged_df = merge_parquet_files(chunk_dirs, filename)
-
-            outfile = outdir / filename
-            merged_df.write_parquet(outfile)
-            print(f"  ✓ Saved: {outfile} ({len(merged_df)} rows)")
-        except FileNotFoundError:
-            print(f"  [SKIP] {filename} not found in any chunks")
-        except Exception as e:
-            print(f"  [ERROR] Failed to merge {filename}: {e}")
-
-    print(f"\n[OK] Merged results saved to: {outdir}")
+    # Merge all chunk parquets
+    try:
+        merged_df = merge_chunk_parquets(chunk_files)
+        
+        outfile = outdir / "merged_results.parquet"
+        merged_df.write_parquet(outfile)
+        print(f"\n[OK] Merged results saved to: {outfile} ({len(merged_df)} rows)")
+    except Exception as e:
+        print(f"[ERROR] Failed to merge chunks: {e}")
+        return
 
 
 if __name__ == "__main__":

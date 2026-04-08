@@ -38,22 +38,25 @@ fi
 CHUNK_ID=${SLURM_ARRAY_TASK_ID}
 TOTAL_CHUNKS=${SLURM_ARRAY_TASK_COUNT}
 WORKERS="${WORKERS:--1}"
-DATASETS=("LIT-PCBA" "DEKOIS2" "DUDE-Z")
-MAX_LIGANDS="${MAX_LIGANDS:-}"
+MANIFEST="${MANIFEST:-}"
 
 # Resolve paths
 OUTDIR="${PROJECT_DIR}/${OUTDIR}"
 CONFIG_FILE="${PROJECT_DIR}/slurm/config.yaml"
+ANALYZE_SCRIPT="${PROJECT_DIR}/analyse_datasets.py"
 
-# Validate config exists
-if [[ ! -f "${CONFIG_FILE}" ]]; then
-    echo "ERROR: Config file not found: ${CONFIG_FILE}"
-    echo "Run setup first to create config"
+# Validate manifest path
+if [[ -z "${MANIFEST}" ]]; then
+    echo "ERROR: MANIFEST environment variable not set by submit_slurm.py"
+    exit 1
+fi
+
+if [[ ! -f "${MANIFEST}" ]]; then
+    echo "ERROR: Manifest file not found: ${MANIFEST}"
     exit 1
 fi
 
 # Validate analyze script exists
-ANALYZE_SCRIPT="${PROJECT_DIR}/analyse_datasets.py"
 if [[ ! -f "${ANALYZE_SCRIPT}" ]]; then
     echo "ERROR: Analysis script not found: ${ANALYZE_SCRIPT}"
     exit 1
@@ -75,16 +78,14 @@ echo "=========================================="
 mkdir -p "${OUTDIR}"
 
 
-# Run analysis
+# Run analysis with manifest-based chunk filtering
 ANALYSIS_ARGS=(
-    "--roots" "${DATASETS[@]}"
-    "--outdir" "${OUTDIR}/chunk_${CHUNK_ID}"
+    "--manifest" "${MANIFEST}"
+    "--chunk-id" "${CHUNK_ID}"
+    "--total-chunks" "${TOTAL_CHUNKS}"
+    "--outdir" "${OUTDIR}"
     "--workers" "$WORKERS"
 )
-
-if [[ -n "${MAX_LIGANDS}" ]]; then
-    ANALYSIS_ARGS+=("--max-ligands-per-dataset" "${MAX_LIGANDS}")
-fi
 
 echo ""
 echo "Running: python3 ${ANALYZE_SCRIPT} ${ANALYSIS_ARGS[*]}"
