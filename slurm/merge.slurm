@@ -4,6 +4,7 @@
 #SBATCH --time=00:30:00                      # Time in minutes
 #SBATCH --cpus-per-task=8              # CPUs per chunk
 #SBATCH --mem-per-cpu=8G     
+
 #SBATCH --output=logs/merge_%j.out
 #SBATCH --error=logs/merge_%j.err
 
@@ -67,13 +68,12 @@ fi
 echo "=========================================="
 echo "SLURM Merge Job"
 echo "=========================================="
-echo "Task:         ${SLURM_ARRAY_JOB_ID}"
+echo "Task:         ${SLURM_JOB_ID}"
 echo "Node:         $(hostname)"
 echo "Project Dir:  ${PROJECT_DIR}"
 echo "Input Dir:    ${INDIR}"
 echo "Output Dir:   ${OUTDIR}"
 echo "Chunks Found: ${CHUNK_COUNT}"
-echo "Merge Script: ${MERGE_SCRIPT}"
 echo "Start Time:   $(date)"
 echo "=========================================="
 
