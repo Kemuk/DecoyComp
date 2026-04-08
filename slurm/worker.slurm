@@ -15,10 +15,11 @@ set -euo pipefail
 export PYTHONUNBUFFERED=1
 
 # Go to repo root (submission directory)
-REPO_ROOT="$SLURM_SUBMIT_DIR"
+REPO_ROOT="${REPO_ROOT:-$(pwd)}"
+cd "${REPO_ROOT}"
 
 # Create logs directory
-mkdir -p "$SLURM_SUBMIT_DIR/logs"
+mkdir -p logs
 
 # Validate required environment variables
 if [[ -z "${OUTDIR:-}" ]]; then
