@@ -191,7 +191,7 @@ class Analyser:
                 pl.col('smiles').unique().count().alias('num_ligands'),
                 pl.col('smiles').unique().alias('smiles_list'),
                 pl.col('label').unique().alias('label_values'),
-                pl.col('fingerprint').list().alias('fingerprint_list'),
+                pl.col('fingerprint').alias('fingerprint_list'),
             ])
         )
         
