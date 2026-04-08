@@ -36,6 +36,11 @@ def empty_manifest_frame() -> pl.DataFrame:
     return pl.DataFrame(schema=MANIFEST_SCHEMA)
 
 
+def _make_surrogate_ligand_id(dataset_code: str, target_id: str, bucket: str, line_index: int) -> str:
+    """Build deterministic non-SMILES ligand identifiers when source files omit ligand codes."""
+    return f"{dataset_code}_{target_id}_{bucket}_{line_index}"
+
+
 def dataset_to_manifest_frame(
     dataset_obj,
     max_ligands_per_dataset: int | None = None
@@ -61,7 +66,7 @@ def dataset_to_manifest_frame(
     if dataset_obj._metadata is None or dataset_obj._metadata.is_empty():
         raise ValueError(f"Dataset {dataset_obj.name} has no metadata")
     
-    required = {'target_id', 'smiles', 'label'}
+    required = {'target_id', 'smiles', 'label', 'ligand_id'}
     if not required.issubset(set(dataset_obj._metadata.columns)):
         missing = required - set(dataset_obj._metadata.columns)
         raise ValueError(f"Metadata missing required columns: {missing}")
@@ -77,17 +82,27 @@ def dataset_to_manifest_frame(
                     df.select('smiles').unique().head(max_ligands_per_dataset).get_column('smiles')
                 )
             )
+
+    invalid_ligand_id_count = df.filter(
+        pl.col('ligand_id').is_null() | (pl.col('ligand_id').cast(pl.Utf8).str.len_chars() == 0)
+    ).height
+    if invalid_ligand_id_count > 0:
+        raise ValueError(
+            f"Dataset {dataset_obj.name} has {invalid_ligand_id_count} rows with missing ligand_id"
+        )
     
     # Normalize to manifest columns
+    file_path_expr = pl.col('file_path') if 'file_path' in df.columns else pl.lit('')
+    source_split_expr = pl.col('source_split') if 'source_split' in df.columns else pl.lit('train')
     result = df.select([
         pl.lit(dataset_obj.name).alias('dataset'),
         pl.col('target_id'),
-        pl.col('target_id').alias('protein_id'),  # Use target_id as protein_id
+        pl.col('target_id').alias('protein_id'),
         pl.col('label'),
         pl.col('smiles'),
-        pl.col('smiles').alias('ligand_id'),  # Use SMILES as ligand_id for now
-        pl.lit('').alias('file_path'),  # Placeholder
-        pl.lit('train').alias('source_split'),  # Default split
+        pl.col('ligand_id').cast(pl.Utf8),
+        file_path_expr.alias('file_path'),
+        source_split_expr.alias('source_split'),
     ])
     
     return result
@@ -142,6 +157,9 @@ class LitPCBADataset(FileBasedDataset):
         if cache_path.exists():
             print(f"[INFO] Loading LIT-PCBA metadata cache from {cache_path}")
             self._metadata = pl.read_parquet(cache_path)
+            if 'ligand_id' not in self._metadata.columns:
+                print("[INFO] LIT-PCBA cache missing ligand_id. Rebuilding cache...")
+                self._build_cache(cache_path)
             print(f"[INFO] Loaded {len(self._metadata):,} molecules from cache")
         else:
             print(f"[INFO] LIT-PCBA metadata cache not found, scanning SMILES files...")
@@ -153,7 +171,9 @@ class LitPCBADataset(FileBasedDataset):
 
         if not self.root_path.is_dir():
             print(f"[WARNING] LIT-PCBA root path not found: {self.root_path}")
-            self._metadata = pl.DataFrame(schema={'target_id': pl.Utf8, 'smiles': pl.Utf8, 'label': pl.Utf8})
+            self._metadata = pl.DataFrame(
+                schema={'target_id': pl.Utf8, 'smiles': pl.Utf8, 'label': pl.Utf8, 'ligand_id': pl.Utf8}
+            )
             return
 
         for entry in tqdm(sorted(self.root_path.iterdir()), desc="Scanning LIT-PCBA targets"):
@@ -166,29 +186,42 @@ class LitPCBADataset(FileBasedDataset):
             actives_file = entry / "actives.smi"
             if actives_file.is_file():
                 with open(actives_file, "r", encoding="utf-8", errors="ignore") as fh:
-                    for line in fh:
+                    for idx, line in enumerate(fh, start=1):
                         parts = line.strip().split()
                         if parts:
+                            ligand_id = parts[1] if len(parts) > 1 else _make_surrogate_ligand_id(
+                                'LITPCBA', target_id, 'active', idx
+                            )
                             records.append({
                                 'target_id': target_id,
                                 'smiles': parts[0],
-                                'label': 'active'
+                                'label': 'active',
+                                'ligand_id': ligand_id,
                             })
 
             # Read inactives
             inactives_file = entry / "inactives.smi"
             if inactives_file.is_file():
                 with open(inactives_file, "r", encoding="utf-8", errors="ignore") as fh:
-                    for line in fh:
+                    for idx, line in enumerate(fh, start=1):
                         parts = line.strip().split()
                         if parts:
+                            ligand_id = parts[1] if len(parts) > 1 else _make_surrogate_ligand_id(
+                                'LITPCBA', target_id, 'inactive', idx
+                            )
                             records.append({
                                 'target_id': target_id,
                                 'smiles': parts[0],
-                                'label': 'inactive'
+                                'label': 'inactive',
+                                'ligand_id': ligand_id,
                             })
 
-        self._metadata = pl.DataFrame(records)
+        if records:
+            self._metadata = pl.DataFrame(records)
+        else:
+            self._metadata = pl.DataFrame(
+                schema={'target_id': pl.Utf8, 'smiles': pl.Utf8, 'label': pl.Utf8, 'ligand_id': pl.Utf8}
+            )
 
         if len(self._metadata) > 0:
             self._metadata.write_parquet(cache_path)
@@ -232,6 +265,9 @@ class DudeZDataset(FileBasedDataset):
         if cache_path.exists():
             print(f"[INFO] Loading DUDE-Z metadata cache from {cache_path}")
             self._metadata = pl.read_parquet(cache_path)
+            if 'ligand_id' not in self._metadata.columns:
+                print("[INFO] DUDE-Z cache missing ligand_id. Rebuilding cache...")
+                self._build_cache(cache_path)
             print(f"[INFO] Loaded {len(self._metadata):,} molecules from cache")
         else:
             print(f"[INFO] DUDE-Z metadata cache not found, scanning SMILES files...")
@@ -243,7 +279,9 @@ class DudeZDataset(FileBasedDataset):
 
         if not self.root_path.is_dir():
             print(f"[WARNING] DUDE-Z root path not found: {self.root_path}")
-            self._metadata = pl.DataFrame(schema={'target_id': pl.Utf8, 'smiles': pl.Utf8, 'label': pl.Utf8})
+            self._metadata = pl.DataFrame(
+                schema={'target_id': pl.Utf8, 'smiles': pl.Utf8, 'label': pl.Utf8, 'ligand_id': pl.Utf8}
+            )
             return
 
         for entry in tqdm(sorted(self.root_path.iterdir()), desc="Scanning DUDE-Z targets"):
@@ -256,29 +294,42 @@ class DudeZDataset(FileBasedDataset):
             actives_file = entry / "actives_final.ism"
             if actives_file.is_file():
                 with open(actives_file, "r", encoding="utf-8", errors="ignore") as fh:
-                    for line in fh:
+                    for idx, line in enumerate(fh, start=1):
                         parts = line.strip().split()
                         if parts:
+                            ligand_id = parts[1] if len(parts) > 1 else _make_surrogate_ligand_id(
+                                'DUDEZ', target_id, 'active', idx
+                            )
                             records.append({
                                 'target_id': target_id,
                                 'smiles': parts[0],
-                                'label': 'active'
+                                'label': 'active',
+                                'ligand_id': ligand_id,
                             })
 
             # Read decoys
             decoys_file = entry / "decoys_final.ism"
             if decoys_file.is_file():
                 with open(decoys_file, "r", encoding="utf-8", errors="ignore") as fh:
-                    for line in fh:
+                    for idx, line in enumerate(fh, start=1):
                         parts = line.strip().split()
                         if parts:
+                            ligand_id = parts[1] if len(parts) > 1 else _make_surrogate_ligand_id(
+                                'DUDEZ', target_id, 'decoy', idx
+                            )
                             records.append({
                                 'target_id': target_id,
                                 'smiles': parts[0],
-                                'label': 'decoy'
+                                'label': 'decoy',
+                                'ligand_id': ligand_id,
                             })
 
-        self._metadata = pl.DataFrame(records)
+        if records:
+            self._metadata = pl.DataFrame(records)
+        else:
+            self._metadata = pl.DataFrame(
+                schema={'target_id': pl.Utf8, 'smiles': pl.Utf8, 'label': pl.Utf8, 'ligand_id': pl.Utf8}
+            )
 
         if len(self._metadata) > 0:
             self._metadata.write_parquet(cache_path)
@@ -321,6 +372,9 @@ class Dekois2Dataset(FileBasedDataset):
         if cache_path.exists():
             print(f"[INFO] Loading DEKOIS2 metadata cache from {cache_path}")
             self._metadata = pl.read_parquet(cache_path)
+            if 'ligand_id' not in self._metadata.columns:
+                print("[INFO] DEKOIS2 cache missing ligand_id. Rebuilding cache...")
+                self._build_cache(cache_path)
             print(f"[INFO] Loaded {len(self._metadata):,} molecules from cache")
         else:
             print(f"[INFO] DEKOIS2 metadata cache not found, scanning SMILES files...")
@@ -332,7 +386,9 @@ class Dekois2Dataset(FileBasedDataset):
 
         if not self.root_path.is_dir():
             print(f"[WARNING] DEKOIS2 root path not found: {self.root_path}")
-            self._metadata = pl.DataFrame(schema={'target_id': pl.Utf8, 'smiles': pl.Utf8, 'label': pl.Utf8})
+            self._metadata = pl.DataFrame(
+                schema={'target_id': pl.Utf8, 'smiles': pl.Utf8, 'label': pl.Utf8, 'ligand_id': pl.Utf8}
+            )
             return
 
         for entry in tqdm(sorted(self.root_path.iterdir()), desc="Scanning DEKOIS2 targets"):
@@ -362,10 +418,16 @@ class Dekois2Dataset(FileBasedDataset):
                         records.append({
                             'target_id': target_id,
                             'smiles': smi,
-                            'label': label
+                            'label': label,
+                            'ligand_id': lig_id,
                         })
 
-        self._metadata = pl.DataFrame(records)
+        if records:
+            self._metadata = pl.DataFrame(records)
+        else:
+            self._metadata = pl.DataFrame(
+                schema={'target_id': pl.Utf8, 'smiles': pl.Utf8, 'label': pl.Utf8, 'ligand_id': pl.Utf8}
+            )
 
         if len(self._metadata) > 0:
             self._metadata.write_parquet(cache_path)

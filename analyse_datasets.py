@@ -15,89 +15,17 @@ import subprocess
 from pathlib import Path
 
 import polars as pl
-from rdkit import Chem
 from rdkit import RDLogger
 
 from molecular_utils import DescriptorCalculator
 from datasets import LitPCBADataset, DudeZDataset, Dekois2Dataset, MUVDataset, DCOIDDataset
-from datasets import MANIFEST_SCHEMA, empty_manifest_frame, dataset_to_manifest_frame
+from datasets import dataset_to_manifest_frame
 from analyser import Analyser
 
 # Suppress RDKit warnings
 RDLogger.DisableLog('rdApp.*')
 
 logger = logging.getLogger(__name__)
-
-
-def _rdkit_canon_or_none(smiles: str) -> str | None:
-    """
-    Canonicalize SMILES or return None if invalid.
-    
-    Args:
-        smiles: SMILES string
-    
-    Returns:
-        Canonical SMILES or None if canonicalization fails
-    """
-    try:
-        mol = Chem.MolFromSmiles(smiles)
-        if mol is None:
-            return None
-        return Chem.MolToSmiles(mol)
-    except Exception:
-        return None
-
-
-def normalize_manifest_frame(df: pl.DataFrame) -> pl.DataFrame:
-    """
-    Normalize a dataset metadata frame to canonical manifest schema.
-    
-    Assumes input has columns: target_id, smiles, label
-    Computes: ligand_id (via canonical SMILES or source), compound_key
-    
-    Args:
-        df: Metadata DataFrame with target_id, smiles, label
-    
-    Returns:
-        Normalized DataFrame with manifest schema
-    
-    Raises:
-        ValueError: if required columns missing or ligand_id derivation fails
-    """
-    required = {'target_id', 'smiles', 'label'}
-    if not required.issubset(set(df.columns)):
-        missing = required - set(df.columns)
-        raise ValueError(f"Missing required columns: {missing}")
-    
-    # Canonicalize all SMILES; fail if invalid
-    canonical_smiles = (
-        df.select('smiles')
-        .with_columns([
-            pl.col('smiles').map_elements(
-                lambda smi: _rdkit_canon_or_none(smi),
-                return_dtype=pl.Utf8
-            ).alias('canonical_smiles')
-        ])
-    )
-    
-    # Check for canonicalization failures
-    fails = canonical_smiles.filter(pl.col('canonical_smiles').is_null())
-    if not fails.is_empty():
-        bad_count = len(fails)
-        raise ValueError(f"Failed to canonicalize {bad_count} SMILES strings")
-    
-    result = df.with_columns(
-        pl.col('smiles')
-        .map_elements(lambda smi: _rdkit_canon_or_none(smi), return_dtype=pl.Utf8)
-        .alias('canonical_smiles')
-    )
-    
-    # Derive ligand_id from canonical SMILES
-    result = result.with_columns(
-        pl.col('canonical_smiles').alias('ligand_id')
-    )
-    
-    return result.select(['target_id', 'smiles', 'label', 'ligand_id', 'canonical_smiles'])
 
 
 def _build_full_manifest(
@@ -154,6 +82,17 @@ def _build_full_manifest(
     unique_keys = full_manifest.select('compound_key').unique()
     if len(unique_keys) < len(full_manifest):
         dups = len(full_manifest) - len(unique_keys)
+        duplicate_key_counts = (
+            full_manifest
+            .group_by('compound_key')
+            .agg(pl.len().alias('count'))
+            .filter(pl.col('count') > 1)
+            .sort('count', descending=True)
+            .head(10)
+        )
+        print("[ERROR] Top duplicate compound keys:")
+        for row in duplicate_key_counts.iter_rows(named=True):
+            print(f"  - {row['compound_key']}: {row['count']} rows")
         raise RuntimeError(f"Compound key not unique: {dups} duplicates found")
     
     # Add manifest_id (1-indexed row number)
