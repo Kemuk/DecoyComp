@@ -74,7 +74,7 @@ def dataset_to_manifest_frame(
         if unique_smiles > max_ligands_per_dataset:
             df = df.filter(
                 pl.col('smiles').is_in(
-                    df.select('smiles').unique().head(max_ligands_per_dataset)
+                    df.select('smiles').unique().head(max_ligands_per_dataset).get_column('smiles')
                 )
             )
     
