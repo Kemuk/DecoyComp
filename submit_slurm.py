@@ -124,6 +124,9 @@ def main():
     parser.add_argument("--merge", action="store_true", help="Run merge.py directly")
     args = parser.parse_args()
 
+    # Create logs directory before submitting jobs (SBATCH output paths evaluated at submission time)
+    (Path(__file__).parent / "logs").mkdir(exist_ok=True)
+
     config = load_config()
 
     if args.merge:
