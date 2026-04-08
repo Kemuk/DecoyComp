@@ -2,7 +2,7 @@
 #SBATCH --job-name=decoy-analysis
 #SBATCH --array=1-4                    # Number of parallel chunks
 #SBATCH --partition=short              # Partition: short, devel, etc.
-#SBATCH --time=30                      # Time in minutes
+#SBATCH --time=00:30:00                      # Time in minutes
 #SBATCH --cpus-per-task=4              # CPUs per chunk
 #SBATCH --mem-per-cpu=4G               # Memory per CPU
 #SBATCH --output=logs/chunk_%a.out
@@ -14,12 +14,15 @@
 set -euo pipefail
 export PYTHONUNBUFFERED=1
 
-# Go to repo root (submission directory)
-REPO_ROOT="${REPO_ROOT:-$(pwd)}"
-cd "${REPO_ROOT}"
+# Set PROJECT_DIR from submit_slurm.py export, SLURM_SUBMIT_DIR, or pwd
+if [[ -z "${PROJECT_DIR:-}" ]]; then
+    PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
+fi
+
+cd "${PROJECT_DIR}"
 
 # Create logs directory
-mkdir -p logs
+mkdir -p "${PROJECT_DIR}/logs"
 
 # Validate required environment variables
 if [[ -z "${OUTDIR:-}" ]]; then
@@ -35,8 +38,8 @@ DATASETS=("LIT-PCBA" "DEKOIS2" "DUDE-Z")
 MAX_LIGANDS="${MAX_LIGANDS:-}"
 
 # Resolve paths
-OUTDIR="${REPO_ROOT}/${OUTDIR}"
-CONFIG_FILE="${REPO_ROOT}/slurm/config.yaml"
+OUTDIR="${PROJECT_DIR}/${OUTDIR}"
+CONFIG_FILE="${PROJECT_DIR}/slurm/config.yaml"
 
 # Validate config exists
 if [[ ! -f "${CONFIG_FILE}" ]]; then
@@ -46,7 +49,7 @@ if [[ ! -f "${CONFIG_FILE}" ]]; then
 fi
 
 # Validate analyze script exists
-ANALYZE_SCRIPT="${REPO_ROOT}/analyse_datasets.py"
+ANALYZE_SCRIPT="${PROJECT_DIR}/analyse_datasets.py"
 if [[ ! -f "${ANALYZE_SCRIPT}" ]]; then
     echo "ERROR: Analysis script not found: ${ANALYZE_SCRIPT}"
     exit 1
@@ -60,7 +63,7 @@ echo "Task:         ${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
 echo "Node:         $(hostname)"
 echo "CPUs:         ${SLURM_CPUS_PER_TASK}"
 echo "Memory Avail: ${SLURM_MEM_PER_NODE} MB"
-echo "Repo Root:    ${REPO_ROOT}"
+echo "Project Dir:  ${PROJECT_DIR}"
 echo "Output Dir:   ${OUTDIR}"
 echo "Config File:  ${CONFIG_FILE}"
 echo "Start Time:   $(date)"
@@ -70,8 +73,8 @@ echo "=========================================="
 mkdir -p "${OUTDIR}"
 
 # Activate environment
-if [[ -d "${REPO_ROOT}/.venv" ]]; then
-    source "${REPO_ROOT}/.venv/bin/activate"
+if [[ -d "${PROJECT_DIR}/.venv" ]]; then
+    source "${PROJECT_DIR}/.venv/bin/activate"
     echo "Activated venv"
 fi
 

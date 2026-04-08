@@ -10,12 +10,15 @@
 set -euo pipefail
 export PYTHONUNBUFFERED=1
 
-# Go to repo root (submission directory)
-REPO_ROOT="${REPO_ROOT:-$(pwd)}"
-cd "${REPO_ROOT}"
+# Set PROJECT_DIR from submit_slurm.py export, SLURM_SUBMIT_DIR, or pwd
+if [[ -z "${PROJECT_DIR:-}" ]]; then
+    PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
+fi
+
+cd "${PROJECT_DIR}"
 
 # Create logs directory
-mkdir -p logs
+mkdir -p "${PROJECT_DIR}/logs"
 
 # Validate required environment variables
 if [[ -z "${INDIR:-}" ]]; then
@@ -29,9 +32,9 @@ if [[ -z "${OUTDIR:-}" ]]; then
 fi
 
 # Configuration (from environment)
-INDIR="${REPO_ROOT}/${INDIR}"
-OUTDIR="${REPO_ROOT}/${OUTDIR}"
-MERGE_SCRIPT="${REPO_ROOT}/slurm/merge.py"
+INDIR="${PROJECT_DIR}/${INDIR}"
+OUTDIR="${PROJECT_DIR}/${OUTDIR}"
+MERGE_SCRIPT="${PROJECT_DIR}/slurm/merge.py"
 
 # Validate merge script exists
 if [[ ! -f "${MERGE_SCRIPT}" ]]; then
@@ -58,7 +61,7 @@ echo "SLURM Merge Job"
 echo "=========================================="
 echo "Task:         ${SLURM_ARRAY_JOB_ID}"
 echo "Node:         $(hostname)"
-echo "Repo Root:    ${REPO_ROOT}"
+echo "Project Dir:  ${PROJECT_DIR}"
 echo "Input Dir:    ${INDIR}"
 echo "Output Dir:   ${OUTDIR}"
 echo "Chunks Found: ${CHUNK_COUNT}"
@@ -67,8 +70,8 @@ echo "Start Time:   $(date)"
 echo "=========================================="
 
 # Activate environment
-if [[ -d "${REPO_ROOT}/.venv" ]]; then
-    source "${REPO_ROOT}/.venv/bin/activate"
+if [[ -d "${PROJECT_DIR}/.venv" ]]; then
+    source "${PROJECT_DIR}/.venv/bin/activate"
     echo "Activated venv"
 fi
 
