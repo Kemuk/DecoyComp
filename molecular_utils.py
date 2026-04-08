@@ -138,9 +138,7 @@ class DescriptorCalculator:
         print(f"[INFO] Computed {valid_count:,} valid molecules ({invalid_count:,} invalid)")
 
         if use_cache:
-            from cache_manager import get_cache_info
-            info = get_cache_info()
-            print(f"[INFO] Cache location: {info['path']} ({info['size_mb']:.1f} MB)")
+            print("[INFO] Descriptor cache enabled")
 
         return cache
 

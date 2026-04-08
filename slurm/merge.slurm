@@ -1,5 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name=decoy-merge
+#SBATCH --partition=short              # Partition: short, devel, etc.
+#SBATCH --time=00:30:00                      # Time in minutes
+#SBATCH --cpus-per-task=8              # CPUs per chunk
+#SBATCH --mem-per-cpu=8G     
 #SBATCH --output=logs/merge_%j.out
 #SBATCH --error=logs/merge_%j.err
 
@@ -14,6 +18,10 @@ export PYTHONUNBUFFERED=1
 if [[ -z "${PROJECT_DIR:-}" ]]; then
     PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
 fi
+
+CONPREFIX="$(readlink -f "${PROJECT_DIR}/../envs/aev-plig")"
+
+source activate $CONPREFIX
 
 cd "${PROJECT_DIR}"
 

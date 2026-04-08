@@ -19,6 +19,10 @@ if [[ -z "${PROJECT_DIR:-}" ]]; then
     PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
 fi
 
+CONPREFIX="$(readlink -f "${PROJECT_DIR}/../envs/aev-plig")"
+
+source activate $CONPREFIX
+
 cd "${PROJECT_DIR}"
 
 # Create logs directory
@@ -61,8 +65,6 @@ echo "=========================================="
 echo "Chunk ID:     ${CHUNK_ID} / ${TOTAL_CHUNKS}"
 echo "Task:         ${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
 echo "Node:         $(hostname)"
-echo "CPUs:         ${SLURM_CPUS_PER_TASK}"
-echo "Memory Avail: ${SLURM_MEM_PER_NODE} MB"
 echo "Project Dir:  ${PROJECT_DIR}"
 echo "Output Dir:   ${OUTDIR}"
 echo "Config File:  ${CONFIG_FILE}"
@@ -72,11 +74,6 @@ echo "=========================================="
 # Create output directory
 mkdir -p "${OUTDIR}"
 
-# Activate environment
-if [[ -d "${PROJECT_DIR}/.venv" ]]; then
-    source "${PROJECT_DIR}/.venv/bin/activate"
-    echo "Activated venv"
-fi
 
 # Run analysis
 ANALYSIS_ARGS=(

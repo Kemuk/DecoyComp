@@ -114,6 +114,7 @@ def main():
         return
 
     # Process all targets
+    print("\n[STEP 2] Processing targets...")
     df = analyser.process_targets()
 
     print("\n[OUTPUT] Saving per-target summary...")

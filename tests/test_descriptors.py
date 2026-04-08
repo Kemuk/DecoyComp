@@ -124,6 +124,29 @@ class TestDescriptorCalculator:
             if smi:  # Skip empty string
                 assert result[smi][1] is None
 
+    def test_calculate_all_parallel_skips_cache_info_scan(self, monkeypatch, sample_smiles, capsys):
+        """Default cache path should not do an expensive cache-size scan."""
+        class FakeMemory:
+            def cache(self, func):
+                return func
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("get_cache_info should not be called")
+
+        monkeypatch.setattr("molecular_utils.get_descriptor_memory", lambda: FakeMemory())
+        monkeypatch.setattr("cache_manager.get_cache_info", fail_if_called)
+
+        result = DescriptorCalculator.calculate_all_parallel(
+            sample_smiles[:2],
+            workers=1,
+            use_cache=True,
+            show_progress=False,
+        )
+
+        assert len(result) == 2
+        assert "CCO" in result
+        assert "Descriptor cache enabled" in capsys.readouterr().out
+
 
 class TestAggregateFromCache:
     """Unit tests for the aggregate_from_cache function."""
