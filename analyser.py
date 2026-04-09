@@ -122,7 +122,8 @@ class Analyser:
         
         required_cols = {
             'manifest_id', 'dataset', 'target_id', 'protein_id', 'label', 'smiles',
-            'ligand_id', 'compound_key', 'file_path', 'source_split'
+            'ligand_id', 'compound_key', 'file_path', 'ligand_file_path',
+            'protein_file_path', 'cache_location', 'source_split'
         }
         if not required_cols.issubset(set(manifest_df.columns)):
             missing = required_cols - set(manifest_df.columns)

@@ -27,6 +27,9 @@ MANIFEST_SCHEMA = {
     'ligand_id': pl.Utf8,
     'compound_key': pl.Utf8,
     'file_path': pl.Utf8,
+    'ligand_file_path': pl.Utf8,
+    'protein_file_path': pl.Utf8,
+    'cache_location': pl.Utf8,
     'source_split': pl.Utf8,
 }
 
@@ -39,6 +42,52 @@ def empty_manifest_frame() -> pl.DataFrame:
 def _make_surrogate_ligand_id(dataset_code: str, target_id: str, bucket: str, line_index: int) -> str:
     """Build deterministic non-SMILES ligand identifiers when source files omit ligand codes."""
     return f"{dataset_code}_{target_id}_{bucket}_{line_index}"
+
+
+def _resolve_protein_file_path(target_dir: Path, dataset_name: str, target_id: str) -> str:
+    """Resolve a concrete protein file path for a target, fail fast if none found."""
+    preferred_names = [
+        'protein.pdb',
+        'receptor.pdb',
+        'protein.mol2',
+        'receptor.mol2',
+        'receptor.pdbqt',
+        f'{target_id}.pdb',
+        f'{target_id}.mol2',
+        f'{target_id}.pdbqt',
+    ]
+    for filename in preferred_names:
+        candidate = target_dir / filename
+        if candidate.is_file():
+            return str(candidate)
+
+    top_level_files = []
+    for pattern in ('*.pdb', '*.mol2', '*.pdbqt', '*.cif'):
+        top_level_files.extend(sorted(target_dir.glob(pattern)))
+
+    if top_level_files:
+        keyword_hits = [
+            path for path in top_level_files
+            if any(token in path.name.lower() for token in ('protein', 'receptor', 'target', 'rec'))
+        ]
+        selected = sorted(keyword_hits)[0] if keyword_hits else sorted(top_level_files)[0]
+        return str(selected)
+
+    nested_files = []
+    for pattern in ('*/*.pdb', '*/*.mol2', '*/*.pdbqt', '*/*.cif'):
+        nested_files.extend(sorted(target_dir.glob(pattern)))
+
+    if nested_files:
+        keyword_hits = [
+            path for path in nested_files
+            if any(token in path.name.lower() for token in ('protein', 'receptor', 'target', 'rec'))
+        ]
+        selected = sorted(keyword_hits)[0] if keyword_hits else sorted(nested_files)[0]
+        return str(selected)
+
+    raise ValueError(
+        f"Dataset {dataset_name} target {target_id} has no detectable protein file in {target_dir}"
+    )
 
 
 def dataset_to_manifest_frame(
@@ -54,7 +103,8 @@ def dataset_to_manifest_frame(
     
     Returns:
         DataFrame with columns: dataset, target_id, protein_id, label, smiles,
-                               ligand_id, file_path, source_split
+                               ligand_id, file_path, ligand_file_path,
+                               protein_file_path, cache_location, source_split
     
     Raises:
         TypeError: if dataset does not expose _metadata
@@ -66,7 +116,10 @@ def dataset_to_manifest_frame(
     if dataset_obj._metadata is None or dataset_obj._metadata.is_empty():
         raise ValueError(f"Dataset {dataset_obj.name} has no metadata")
     
-    required = {'target_id', 'smiles', 'label', 'ligand_id'}
+    required = {
+        'target_id', 'smiles', 'label', 'ligand_id',
+        'ligand_file_path', 'protein_file_path', 'cache_location'
+    }
     if not required.issubset(set(dataset_obj._metadata.columns)):
         missing = required - set(dataset_obj._metadata.columns)
         raise ValueError(f"Metadata missing required columns: {missing}")
@@ -84,12 +137,34 @@ def dataset_to_manifest_frame(
             )
 
     invalid_ligand_id_count = df.filter(
-        pl.col('ligand_id').is_null() | (pl.col('ligand_id').cast(pl.Utf8).str.len_chars() == 0)
+        pl.col('ligand_id').is_null() | (pl.col('ligand_id').cast(pl.Utf8).str.strip_chars().str.len_chars() == 0)
     ).height
     if invalid_ligand_id_count > 0:
         raise ValueError(
             f"Dataset {dataset_obj.name} has {invalid_ligand_id_count} rows with missing ligand_id"
         )
+
+    for path_col in ('ligand_file_path', 'protein_file_path', 'cache_location'):
+        invalid_path_count = df.filter(
+            pl.col(path_col).is_null() | (pl.col(path_col).cast(pl.Utf8).str.strip_chars().str.len_chars() == 0)
+        ).height
+        if invalid_path_count > 0:
+            raise ValueError(
+                f"Dataset {dataset_obj.name} has {invalid_path_count} rows with missing {path_col}"
+            )
+
+        existing_paths = (
+            df.select(pl.col(path_col).cast(pl.Utf8).alias(path_col))
+            .unique()
+            .to_series()
+            .to_list()
+        )
+        missing_paths = [p for p in existing_paths if not Path(p).exists()]
+        if missing_paths:
+            first_missing = missing_paths[0]
+            raise ValueError(
+                f"Dataset {dataset_obj.name} has non-existent {path_col}: {first_missing}"
+            )
     
     # Normalize to manifest columns
     file_path_expr = pl.col('file_path') if 'file_path' in df.columns else pl.lit('')
@@ -102,6 +177,9 @@ def dataset_to_manifest_frame(
         pl.col('smiles'),
         pl.col('ligand_id').cast(pl.Utf8),
         file_path_expr.alias('file_path'),
+        pl.col('ligand_file_path').cast(pl.Utf8),
+        pl.col('protein_file_path').cast(pl.Utf8),
+        pl.col('cache_location').cast(pl.Utf8),
         source_split_expr.alias('source_split'),
     ])
     
@@ -157,8 +235,9 @@ class LitPCBADataset(FileBasedDataset):
         if cache_path.exists():
             print(f"[INFO] Loading LIT-PCBA metadata cache from {cache_path}")
             self._metadata = pl.read_parquet(cache_path)
-            if 'ligand_id' not in self._metadata.columns:
-                print("[INFO] LIT-PCBA cache missing ligand_id. Rebuilding cache...")
+            required_cache_cols = {'ligand_id', 'ligand_file_path', 'protein_file_path', 'cache_location'}
+            if not required_cache_cols.issubset(set(self._metadata.columns)):
+                print("[INFO] LIT-PCBA cache missing strict manifest columns. Rebuilding cache...")
                 self._build_cache(cache_path)
             print(f"[INFO] Loaded {len(self._metadata):,} molecules from cache")
         else:
@@ -172,7 +251,15 @@ class LitPCBADataset(FileBasedDataset):
         if not self.root_path.is_dir():
             print(f"[WARNING] LIT-PCBA root path not found: {self.root_path}")
             self._metadata = pl.DataFrame(
-                schema={'target_id': pl.Utf8, 'smiles': pl.Utf8, 'label': pl.Utf8, 'ligand_id': pl.Utf8}
+                schema={
+                    'target_id': pl.Utf8,
+                    'smiles': pl.Utf8,
+                    'label': pl.Utf8,
+                    'ligand_id': pl.Utf8,
+                    'ligand_file_path': pl.Utf8,
+                    'protein_file_path': pl.Utf8,
+                    'cache_location': pl.Utf8,
+                }
             )
             return
 
@@ -181,9 +268,14 @@ class LitPCBADataset(FileBasedDataset):
                 continue
 
             target_id = entry.name
+            actives_file = entry / "actives.smi"
+            inactives_file = entry / "inactives.smi"
+            if not actives_file.is_file() and not inactives_file.is_file():
+                continue
+
+            protein_file_path = _resolve_protein_file_path(entry, self.name, target_id)
 
             # Read actives
-            actives_file = entry / "actives.smi"
             if actives_file.is_file():
                 with open(actives_file, "r", encoding="utf-8", errors="ignore") as fh:
                     for idx, line in enumerate(fh, start=1):
@@ -197,10 +289,12 @@ class LitPCBADataset(FileBasedDataset):
                                 'smiles': parts[0],
                                 'label': 'active',
                                 'ligand_id': ligand_id,
+                                'ligand_file_path': str(actives_file),
+                                'protein_file_path': protein_file_path,
+                                'cache_location': str(cache_path),
                             })
 
             # Read inactives
-            inactives_file = entry / "inactives.smi"
             if inactives_file.is_file():
                 with open(inactives_file, "r", encoding="utf-8", errors="ignore") as fh:
                     for idx, line in enumerate(fh, start=1):
@@ -214,13 +308,24 @@ class LitPCBADataset(FileBasedDataset):
                                 'smiles': parts[0],
                                 'label': 'inactive',
                                 'ligand_id': ligand_id,
+                                'ligand_file_path': str(inactives_file),
+                                'protein_file_path': protein_file_path,
+                                'cache_location': str(cache_path),
                             })
 
         if records:
             self._metadata = pl.DataFrame(records)
         else:
             self._metadata = pl.DataFrame(
-                schema={'target_id': pl.Utf8, 'smiles': pl.Utf8, 'label': pl.Utf8, 'ligand_id': pl.Utf8}
+                schema={
+                    'target_id': pl.Utf8,
+                    'smiles': pl.Utf8,
+                    'label': pl.Utf8,
+                    'ligand_id': pl.Utf8,
+                    'ligand_file_path': pl.Utf8,
+                    'protein_file_path': pl.Utf8,
+                    'cache_location': pl.Utf8,
+                }
             )
 
         if len(self._metadata) > 0:
@@ -265,8 +370,9 @@ class DudeZDataset(FileBasedDataset):
         if cache_path.exists():
             print(f"[INFO] Loading DUDE-Z metadata cache from {cache_path}")
             self._metadata = pl.read_parquet(cache_path)
-            if 'ligand_id' not in self._metadata.columns:
-                print("[INFO] DUDE-Z cache missing ligand_id. Rebuilding cache...")
+            required_cache_cols = {'ligand_id', 'ligand_file_path', 'protein_file_path', 'cache_location'}
+            if not required_cache_cols.issubset(set(self._metadata.columns)):
+                print("[INFO] DUDE-Z cache missing strict manifest columns. Rebuilding cache...")
                 self._build_cache(cache_path)
             print(f"[INFO] Loaded {len(self._metadata):,} molecules from cache")
         else:
@@ -280,7 +386,15 @@ class DudeZDataset(FileBasedDataset):
         if not self.root_path.is_dir():
             print(f"[WARNING] DUDE-Z root path not found: {self.root_path}")
             self._metadata = pl.DataFrame(
-                schema={'target_id': pl.Utf8, 'smiles': pl.Utf8, 'label': pl.Utf8, 'ligand_id': pl.Utf8}
+                schema={
+                    'target_id': pl.Utf8,
+                    'smiles': pl.Utf8,
+                    'label': pl.Utf8,
+                    'ligand_id': pl.Utf8,
+                    'ligand_file_path': pl.Utf8,
+                    'protein_file_path': pl.Utf8,
+                    'cache_location': pl.Utf8,
+                }
             )
             return
 
@@ -289,9 +403,14 @@ class DudeZDataset(FileBasedDataset):
                 continue
 
             target_id = entry.name
+            actives_file = entry / "actives_final.ism"
+            decoys_file = entry / "decoys_final.ism"
+            if not actives_file.is_file() and not decoys_file.is_file():
+                continue
+
+            protein_file_path = _resolve_protein_file_path(entry, self.name, target_id)
 
             # Read actives
-            actives_file = entry / "actives_final.ism"
             if actives_file.is_file():
                 with open(actives_file, "r", encoding="utf-8", errors="ignore") as fh:
                     for idx, line in enumerate(fh, start=1):
@@ -305,10 +424,12 @@ class DudeZDataset(FileBasedDataset):
                                 'smiles': parts[0],
                                 'label': 'active',
                                 'ligand_id': ligand_id,
+                                'ligand_file_path': str(actives_file),
+                                'protein_file_path': protein_file_path,
+                                'cache_location': str(cache_path),
                             })
 
             # Read decoys
-            decoys_file = entry / "decoys_final.ism"
             if decoys_file.is_file():
                 with open(decoys_file, "r", encoding="utf-8", errors="ignore") as fh:
                     for idx, line in enumerate(fh, start=1):
@@ -322,13 +443,24 @@ class DudeZDataset(FileBasedDataset):
                                 'smiles': parts[0],
                                 'label': 'decoy',
                                 'ligand_id': ligand_id,
+                                'ligand_file_path': str(decoys_file),
+                                'protein_file_path': protein_file_path,
+                                'cache_location': str(cache_path),
                             })
 
         if records:
             self._metadata = pl.DataFrame(records)
         else:
             self._metadata = pl.DataFrame(
-                schema={'target_id': pl.Utf8, 'smiles': pl.Utf8, 'label': pl.Utf8, 'ligand_id': pl.Utf8}
+                schema={
+                    'target_id': pl.Utf8,
+                    'smiles': pl.Utf8,
+                    'label': pl.Utf8,
+                    'ligand_id': pl.Utf8,
+                    'ligand_file_path': pl.Utf8,
+                    'protein_file_path': pl.Utf8,
+                    'cache_location': pl.Utf8,
+                }
             )
 
         if len(self._metadata) > 0:
@@ -372,8 +504,9 @@ class Dekois2Dataset(FileBasedDataset):
         if cache_path.exists():
             print(f"[INFO] Loading DEKOIS2 metadata cache from {cache_path}")
             self._metadata = pl.read_parquet(cache_path)
-            if 'ligand_id' not in self._metadata.columns:
-                print("[INFO] DEKOIS2 cache missing ligand_id. Rebuilding cache...")
+            required_cache_cols = {'ligand_id', 'ligand_file_path', 'protein_file_path', 'cache_location'}
+            if not required_cache_cols.issubset(set(self._metadata.columns)):
+                print("[INFO] DEKOIS2 cache missing strict manifest columns. Rebuilding cache...")
                 self._build_cache(cache_path)
             print(f"[INFO] Loaded {len(self._metadata):,} molecules from cache")
         else:
@@ -387,7 +520,15 @@ class Dekois2Dataset(FileBasedDataset):
         if not self.root_path.is_dir():
             print(f"[WARNING] DEKOIS2 root path not found: {self.root_path}")
             self._metadata = pl.DataFrame(
-                schema={'target_id': pl.Utf8, 'smiles': pl.Utf8, 'label': pl.Utf8, 'ligand_id': pl.Utf8}
+                schema={
+                    'target_id': pl.Utf8,
+                    'smiles': pl.Utf8,
+                    'label': pl.Utf8,
+                    'ligand_id': pl.Utf8,
+                    'ligand_file_path': pl.Utf8,
+                    'protein_file_path': pl.Utf8,
+                    'cache_location': pl.Utf8,
+                }
             )
             return
 
@@ -400,6 +541,8 @@ class Dekois2Dataset(FileBasedDataset):
 
             if not smi_path.is_file():
                 continue
+
+            protein_file_path = _resolve_protein_file_path(entry, self.name, target_id)
 
             with open(smi_path, "r", encoding="utf-8", errors="ignore") as fh:
                 for line in fh:
@@ -420,13 +563,24 @@ class Dekois2Dataset(FileBasedDataset):
                             'smiles': smi,
                             'label': label,
                             'ligand_id': lig_id,
+                            'ligand_file_path': str(smi_path),
+                            'protein_file_path': protein_file_path,
+                            'cache_location': str(cache_path),
                         })
 
         if records:
             self._metadata = pl.DataFrame(records)
         else:
             self._metadata = pl.DataFrame(
-                schema={'target_id': pl.Utf8, 'smiles': pl.Utf8, 'label': pl.Utf8, 'ligand_id': pl.Utf8}
+                schema={
+                    'target_id': pl.Utf8,
+                    'smiles': pl.Utf8,
+                    'label': pl.Utf8,
+                    'ligand_id': pl.Utf8,
+                    'ligand_file_path': pl.Utf8,
+                    'protein_file_path': pl.Utf8,
+                    'cache_location': pl.Utf8,
+                }
             )
 
         if len(self._metadata) > 0:
@@ -570,6 +724,10 @@ class DCOIDDataset(FileBasedDataset):
         if cache_path.exists():
             print(f"[INFO] Loading D-COID metadata cache from {cache_path}")
             self._metadata = pl.read_parquet(cache_path)
+            required_cache_cols = {'ligand_id', 'ligand_file_path', 'protein_file_path', 'cache_location'}
+            if not required_cache_cols.issubset(set(self._metadata.columns)):
+                print("[INFO] D-COID cache missing strict manifest columns. Rebuilding cache...")
+                self._preprocess_pdb_files(cache_path)
             print(f"[INFO] Loaded {len(self._metadata):,} ligands from cache")
         else:
             print(f"[INFO] D-COID metadata cache not found, preprocessing PDB files...")
@@ -731,6 +889,9 @@ class DCOIDDataset(FileBasedDataset):
                 'label': label,
                 'smiles': smiles,
                 'file_path': str(pdb_path),
+                'ligand_file_path': str(pdb_path),
+                'protein_file_path': str(pdb_path),
+                'cache_location': str(cache_path),
                 'error': error
             })
 

@@ -101,7 +101,8 @@ def _build_full_manifest(
     # Reorder columns to match schema
     full_manifest = full_manifest.select([
         'manifest_id', 'dataset', 'target_id', 'protein_id', 'label', 'smiles',
-        'ligand_id', 'compound_key', 'file_path', 'source_split'
+        'ligand_id', 'compound_key', 'file_path', 'ligand_file_path',
+        'protein_file_path', 'cache_location', 'source_split'
     ])
     
     print(f"[MANIFEST] Full manifest: {len(full_manifest)} rows, {full_manifest.width} columns")
